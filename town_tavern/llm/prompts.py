@@ -395,10 +395,15 @@ def build_turn_decision_prompt(
         "你只能依据【你自己知道的信息】行动:你的记忆、你的目标,以及你亲眼看到的人。"
         "你不知道别人私下都说了什么。"
     )
+    # 引擎 A:按当前危机【阶段】注入局势压力(对话模式的"阶段事件池"等价物)。
+    # 只在曝光/债务进入相应阶段时才出现,引导对应 NPC 的防守/施压姿态,不揭真相。
+    directive = world.crisis_directive()
+    directive_block = f"【当前局势压力(请据此调整你的行动姿态)】\n{directive}\n\n" if directive else ""
     user = (
         f"【场景】此刻你在『昨日酒馆』店内(镇上唯一的酒馆,你们都在这儿)。\n"
         f"【当前状态】压力:{npc.stress}/100,当前目标:{npc.current_goal}\n"
         f"世界:{world.summary_text()}\n\n"
+        f"{directive_block}"
         f"【此刻同在酒馆、你可以找其搭话的人(附你对各人的关系,据此判断该亲近/试探/回避谁)】\n"
         f"{others_text}\n\n"
         f"{_memories_text(recent, longterm)}\n\n"
@@ -480,10 +485,10 @@ def build_narrator_prompt(acts_text: str, npc_names: dict) -> tuple[str, str]:
     name_map = "、".join(f"{k}={v}" for k, v in npc_names.items())
     system = (
         f"{GUARDRAIL}\n\n"
-        "你是酒馆里一个沉默的旁观者(旁白)。你能看见谁和谁凑在一起、各自的神态举止,"
-        "但【听不到】他们具体说了什么。\n\n"
+        "你是酒馆里一个沉默的旁观者(旁白)。你能看见谁和谁凑在一起、各自的神态举止、"
+        "看得见的动作与物件,但【听不到】他们具体说了什么。\n\n"
         "【铁律】\n"
-        "1. 只陈述可观察到的事实:谁找了谁、谁独自做了什么、神态如何。\n"
+        "1. 只陈述可观察到的事实:谁找了谁、谁独自做了什么、动了什么物件、神态如何。\n"
         "2. 严禁写出或暗示对话的【具体内容】(你根本听不到)。\n"
         "3. 严禁做价值判断、严禁推测动机或后果,只白描。\n"
         f"【合法角色】{name_map}(actors 只能用这些 id:{legal_ids})"
@@ -493,11 +498,16 @@ def build_narrator_prompt(acts_text: str, npc_names: dict) -> tuple[str, str]:
         "请以旁观者视角,白描你【看到】的画面,输出 JSON:\n"
         "{\n"
         '  "notes": [\n'
-        '    {"actors": ["相关 npc_id"], "demeanor": "可观察到的神态与来往方向,'
-        '不含任何对话内容,如 『阿财凑近老陈低声说着什么,老陈脸色一沉』"}\n'
+        '    {"actors": ["相关 npc_id"],\n'
+        '     "event_core": "这次来往里看得见的【核心动作或具体细节】,'
+        '必须包含一个具体物件或动作结果,不含任何听到的对话内容,'
+        '如 『阿财把一张折过的纸条塞给老陈后匆匆离开』",\n'
+        '     "demeanor": "可观察到的神态,如 『老陈接过纸条时脸色一沉』"}\n'
         "  ]\n"
         "}\n"
-        "每段来往/独自行动写一条 note;只写看得见的,绝不写听得见的。"
+        "每段来往/独自行动写一条 note。\n"
+        "【硬性要求】每条 note 的 event_core 必须落到一个【具体物件 / 动作结果 / 可记忆细节】,"
+        "不得只写『低声交谈』『眼神闪烁』『神色不对』这类空泛描述;只写看得见的,绝不写听得见的。"
     )
     return system, user
 

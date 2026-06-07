@@ -56,6 +56,7 @@ def _show_state(repo: Repository, llm: LLMClient, game_id: str) -> None:
     world = repo.get_world_state(game_id)
     print("\n========== 今日酒馆 ==========")
     print(world.summary_text())
+    print(world.debug_state_text())
     summary = world_engine.build_today_summary(repo, llm, game_id)
     print(f"\n氛围:{summary}")
     _print_player(repo, game_id)

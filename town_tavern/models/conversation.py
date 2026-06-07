@@ -60,9 +60,19 @@ class ConversationReply(BaseModel):
 
 
 class ObservedInteraction(BaseModel):
-    """旁白观察到的一次互动(只含可观察信息,绝无对话内容)。"""
+    """旁白观察到的一次互动(只含可观察信息,绝无对话内容)。
+
+    引擎 B(B1+B2):在"神态"之外增加一个【可见的核心动作/具体细节】(event_core)——
+    一个看得见的物件或动作结果(如『阿财把一张折过的纸条塞给老陈』),让当日纪事
+    从"眼神闪烁"的监控录像升级为有事件核、有记忆点的剧情日志。仍严禁泄露对话内容。
+    """
 
     actors: List[str] = Field(default_factory=list, description="被观察到有来往/行动的 npc_id")
+    event_core: str = Field(
+        default="",
+        description="这次来往里【看得见】的核心动作或具体细节(一个物件/一个动作结果),"
+        "不含任何听到的对话内容,如 『阿财把一张折过的纸条塞给老陈后匆匆离开』",
+    )
     demeanor: str = Field(..., description="可观察到的神态与互动方向,如 『阿财凑近老陈低声说着什么,老陈脸色发白』")
 
 

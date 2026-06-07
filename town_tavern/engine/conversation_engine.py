@@ -15,10 +15,7 @@
 from concurrent.futures import ThreadPoolExecutor
 from typing import Callable, List, Optional
 
-from ..config import (
-    ATHOU_PROGRESS_MAX, ATHOU_PROGRESS_MIN, CONV_CONCURRENCY, CONV_REFEREE_LLM,
-    CONV_ROUNDS,
-)
+from ..config import CONV_CONCURRENCY, CONV_REFEREE_LLM, CONV_ROUNDS
 from ..llm import prompts
 from ..llm.client import LLMClient
 from ..models.conversation import (
@@ -61,11 +58,14 @@ def _apply_consequences(
     for flag, value in cons.flags.items():
         repo.set_world_value(game_id, f"flag_{flag}", "1" if value else "0")
         agg.flags[flag] = value
+    # 【核心原则:真相归玩家】NPC 自运行链路(裁决器/对话)产出的 athou_progress_delta
+    # 一律【不落地】到阿土真相进度(玩家驱动)——NPC 自跑只推局势,绝不替玩家揭真相。
+    # 但其正向部分会转化为【真相压力 truth_pressure】(有平台上限),用于驱动危机阶段;
+    # 仍记进 agg 仅供日志/调试展示,世界的"玩家真相进度"真值不变。
     if cons.athou_progress_delta:
-        cur = repo.get_world_state(game_id).athou_truth_progress
-        new = max(ATHOU_PROGRESS_MIN, min(ATHOU_PROGRESS_MAX, cur + cons.athou_progress_delta))
-        repo.set_world_value(game_id, "athou_truth_progress", new)
         agg.athou_progress_delta += cons.athou_progress_delta
+        if cons.athou_progress_delta > 0:
+            repo.add_truth_pressure(game_id, cons.athou_progress_delta)
     if cons.exposure_delta:
         repo.add_exposure(game_id, cons.exposure_delta)
         agg.exposure_delta += cons.exposure_delta
@@ -96,13 +96,16 @@ def _fact_sheet(repo: Repository, game_id: str) -> str:
     这就是"结合以往所有人行动"的压缩——世界状态本身即累积结果,无需额外记忆。
     """
     w = repo.get_world_state(game_id)
-    return (
+    base = (
         f"阿土真相进度={w.athou_truth_progress}/100;"
         f"老陈曝光风险={w.police_exposure_risk}({w.exposure_level()});"
         f"阿财欠债={w.boss_debt}({w.debt_level()});"
         f"全局紧张度={w.global_tension}。"
         "（提示:进度越低越难查到真相,曝光越高线索越多;掩盖未必成功。）"
     )
+    # 引擎 A:把当前危机阶段的局势压力也喂给裁决器,使独自行动结果与阶段一致
+    directive = w.crisis_directive()
+    return f"{base}\n{directive}" if directive else base
 
 
 def _gather_json(llm: LLMClient, jobs: List[Optional[tuple]]) -> List[Optional[object]]:
@@ -282,22 +285,35 @@ def _run_narrator(
     npc_names = {n.id: n.name for n in repo.get_all_npcs(game_id)}
     valid_ids = set(npc_names)
     system, user = prompts.build_narrator_prompt("\n".join(acts_lines), npc_names)
-    try:
-        obs = llm.chat_json(system, user, NarratorObservation)
-    except Exception:
+
+    # 引擎 B 字段校验 + 失败重生成:旁白须给出具体 event_core;若整批漏填则重试一次。
+    obs = None
+    for _attempt in range(2):
+        try:
+            cand = llm.chat_json(system, user, NarratorObservation)
+        except Exception:
+            cand = None
+        if cand is not None and any((n.event_core or "").strip() for n in cand.notes):
+            obs = cand
+            break
+        obs = cand  # 记下最后一次结果(可能 event_core 仍为空)作为兜底
+    if obs is None:
         return
 
     for note in obs.notes:
         note.actors = [a for a in note.actors if a in valid_ids]
+        # event_core 缺失时退回 demeanor,保证当日纪事仍有可读内容(不阻断主流程)
+        core = (note.event_core or "").strip() or note.demeanor
         all_notes.append(note)
         if on_progress is not None:
-            on_progress(f"    [旁白] {note.demeanor}")
-        # 把"可观察到的神态"作为低重要度传闻写给未直接参与者(旁观者也在场)
+            tail = f"({note.demeanor})" if note.event_core and note.demeanor else ""
+            on_progress(f"    [旁白] {core}{tail}")
+        # 把"可观察到的具体动作 + 神态"作为低重要度传闻写给未直接参与者(旁观者也在场)
         seen_by = valid_ids - set(note.actors)
         for nid in seen_by:
             memory_engine.write_memory(
                 repo, game_id, nid, day,
-                content=f"我瞧见:{note.demeanor}",
+                content=f"我瞧见:{core}",
                 mtype=MemoryType.RUMOR, importance=30,
             )
 
@@ -371,8 +387,10 @@ def run_social_day(
         # 阶段5)旁白白描本轮(无内容、只神态)→ 写给旁观者
         _run_narrator(repo, llm, game_id, day, acts_lines, all_notes, on_progress)
 
-    # 汇总成当日公开纪事事件
-    summary = "；".join(n.demeanor for n in all_notes) or "酒馆里平平淡淡的一天,没什么大动静。"
+    # 汇总成当日公开纪事事件:优先用具体的 event_core(剧情日志),退回 demeanor(神态)
+    summary = "；".join(
+        (n.event_core or "").strip() or n.demeanor for n in all_notes
+    ) or "酒馆里平平淡淡的一天,没什么大动静。"
     actors: List[str] = []
     for n in all_notes:
         for a in n.actors:

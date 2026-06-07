@@ -62,8 +62,12 @@ MAX_MANUAL_ADVANCE_DAYS = int(os.environ.get("MAX_MANUAL_ADVANCE_DAYS", "10"))
 # ---------------------------------------------------------------------------
 # 构造对话上下文时取最近多少条短期记忆
 RECENT_MEMORY_LIMIT = 5
-# 构造对话上下文时取多少条重要长期记忆
+# 构造对话上下文时取多少条重要长期记忆(兼容旧逻辑/压缩用)
 LONGTERM_MEMORY_LIMIT = 3
+# 引擎 C(C2)记忆分槽:长期记忆按"槽位"组装,避免反思刷屏挤掉关键事实。
+# 关键事实(非反思类长期记忆)槽位数 + 自我反思单独槽位数。
+LONGTERM_FACT_SLOT = int(os.environ.get("LONGTERM_FACT_SLOT", "3"))
+LONGTERM_REFLECTION_SLOT = int(os.environ.get("LONGTERM_REFLECTION_SLOT", "1"))
 # 单个 NPC 短期记忆超过该数量时触发压缩
 MEMORY_COMPRESS_THRESHOLD = 12
 # 反思机制:每隔多少天,NPC 自动总结处境并更新长期目标
@@ -127,6 +131,30 @@ EXPOSURE_DANGER = 70     # 老陈主动设法掩盖
 EXPOSURE_CRITICAL = 90   # 老陈可能栽赃/摊牌
 # 全局紧张度每日自然衰减(避免单调累积至饱和)
 TENSION_DAILY_DECAY = 2
+
+# ---------------------------------------------------------------------------
+# 引擎 A:阈值状态机 + 衰减 + 平台(让自运行变量"会喘气、绷到高张力平台即止")
+# ---------------------------------------------------------------------------
+# 曝光风险每日自然衰减:无新线索时缓慢回落,避免单调贴顶("系统说摊牌、世界无反应")。
+EXPOSURE_DAILY_DECAY = int(os.environ.get("EXPOSURE_DAILY_DECAY", "3"))
+# 曝光"高张力平台":超过此值后,自运行不再无限累加,而是被额外回拉到平台附近维持紧张,
+# 而非永远钉死在 100。玩家行动仍可把它顶得更高。
+EXPOSURE_PLATFORM = int(os.environ.get("EXPOSURE_PLATFORM", "90"))
+# 债务"平台":到达濒临卖店(DEBT_CRITICAL)后,自运行利息停止累加,转为维持高压等待玩家,
+# 避免债务数字无意义地指数爆炸。
+DEBT_PLATFORM = DEBT_CRITICAL
+# 阶段判定迟滞:升入高阶后,需回落超过该幅度才退阶,避免临界点反复抖动(振荡)。
+STAGE_HYSTERESIS = int(os.environ.get("STAGE_HYSTERESIS", "8"))
+
+# ---------------------------------------------------------------------------
+# 引擎 C(C1):真相压力(truth_pressure)
+# ---------------------------------------------------------------------------
+# NPC 自运行【只能】累积 truth_pressure(局势压力),用于驱动危机阶段;
+# 它【不等于】玩家揭开真相(后者仍记在 athou_truth_progress,只因玩家行动增加)。
+# truth_pressure 设软上限平台:绷到平台即维持高张力等待玩家,而非无限爆炸。
+TRUTH_PRESSURE_MIN = 0
+TRUTH_PRESSURE_MAX = 100
+TRUTH_PRESSURE_PLATFORM = int(os.environ.get("TRUTH_PRESSURE_PLATFORM", "80"))
 
 # ---------------------------------------------------------------------------
 # 后台自动演化守护进程(daemon)参数

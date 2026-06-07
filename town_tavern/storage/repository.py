@@ -10,7 +10,8 @@ from typing import List, Optional
 
 from ..config import (
     DATA_DIR,
-    LONGTERM_MEMORY_LIMIT,
+    LONGTERM_FACT_SLOT,
+    LONGTERM_REFLECTION_SLOT,
     PLAYER_DAILY_ENERGY,
     PLAYER_STAT_MAX,
     PLAYER_STAT_MIN,
@@ -20,6 +21,8 @@ from ..config import (
     RELATION_MIN,
     STRESS_MAX,
     STRESS_MIN,
+    TRUTH_PRESSURE_MAX,
+    TRUTH_PRESSURE_MIN,
 )
 from ..models.event import Event, EventConsequences, EventType
 from ..models.memory import Memory, MemoryType
@@ -271,17 +274,37 @@ class Repository:
         return [self._row_to_memory(r) for r in rows]
 
     def get_longterm_memories(
-        self, game_id: str, npc_id: str, limit: int = LONGTERM_MEMORY_LIMIT
+        self,
+        game_id: str,
+        npc_id: str,
+        fact_limit: int = LONGTERM_FACT_SLOT,
+        reflection_limit: int = LONGTERM_REFLECTION_SLOT,
     ) -> List[Memory]:
-        rows = self.conn.execute(
+        """按【槽位】组装长期记忆,避免反思刷屏挤掉关键事实(C2)。
+
+        - 关键事实槽:非反思类长期记忆,按重要度取前 fact_limit 条。
+        - 自我反思槽:reflection 类长期记忆单独保留 reflection_limit 条(取最新)。
+        返回 事实 + 反思 的合并列表(事实在前)。反思因此不再与事实抢同一批 Top-N。
+        """
+        fact_rows = self.conn.execute(
             """
             SELECT * FROM memories
-            WHERE game_id = ? AND npc_id = ? AND is_long_term = 1
+            WHERE game_id = ? AND npc_id = ? AND is_long_term = 1 AND type != ?
             ORDER BY importance DESC, id DESC LIMIT ?
             """,
-            (game_id, npc_id, limit),
+            (game_id, npc_id, MemoryType.REFLECTION.value, fact_limit),
         ).fetchall()
-        return [self._row_to_memory(r) for r in rows]
+        reflection_rows = self.conn.execute(
+            """
+            SELECT * FROM memories
+            WHERE game_id = ? AND npc_id = ? AND is_long_term = 1 AND type = ?
+            ORDER BY day DESC, id DESC LIMIT ?
+            """,
+            (game_id, npc_id, MemoryType.REFLECTION.value, reflection_limit),
+        ).fetchall()
+        return [self._row_to_memory(r) for r in fact_rows] + [
+            self._row_to_memory(r) for r in reflection_rows
+        ]
 
     def get_shortterm_memories(self, game_id: str, npc_id: str) -> List[Memory]:
         """获取该 NPC 全部短期记忆(用于压缩判断)。"""
@@ -400,12 +423,20 @@ class Repository:
             v = self.get_world_value(game_id, key)
             return int(v) if v is not None else default
 
+        def _str(key: str, default: str) -> str:
+            v = self.get_world_value(game_id, key)
+            return v if v is not None else default
+
         return WorldState(
             current_day=_int("current_day", 1),
             global_tension=_int("global_tension", 20),
             athou_truth_progress=_int("athou_truth_progress", 0),
             police_exposure_risk=_int("police_exposure_risk", 30),
             boss_debt=_int("boss_debt", 300000),
+            truth_pressure=_int("truth_pressure", 0),
+            exposure_stage=_str("exposure_stage", "normal"),
+            debt_stage=_str("debt_stage", "stable"),
+            truth_stage=_str("truth_stage", "latent"),
         )
 
     def add_boss_debt(self, game_id: str, delta: int) -> int:
@@ -420,6 +451,13 @@ class Repository:
         cur = self.get_world_state(game_id).police_exposure_risk
         new = _clamp(cur + delta, 0, 100)
         self.set_world_value(game_id, "police_exposure_risk", new)
+        return new
+
+    def add_truth_pressure(self, game_id: str, delta: int) -> int:
+        """调整真相压力(裁剪 0-100),返回新值。仅供 NPC 自运行链路累积局势压力。"""
+        cur = self.get_world_state(game_id).truth_pressure
+        new = _clamp(cur + delta, TRUTH_PRESSURE_MIN, TRUTH_PRESSURE_MAX)
+        self.set_world_value(game_id, "truth_pressure", new)
         return new
 
     def get_current_day(self, game_id: str) -> int:

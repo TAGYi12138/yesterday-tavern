@@ -15,15 +15,21 @@ from datetime import datetime, timezone
 from typing import Callable, List, Optional
 
 from ..config import (
-    ATHOU_PROGRESS_MAX, ATHOU_PROGRESS_MIN, CONVERSATION_MODE, DEBT_DAILY_INTEREST,
-    DEBT_HIGH_INTEREST_MULT, DEBT_STRESS_THRESHOLD, MAX_AUTO_ADVANCE_DAYS,
+    CONVERSATION_MODE, DEBT_DAILY_INTEREST,
+    DEBT_HIGH_INTEREST_MULT, DEBT_PLATFORM, DEBT_STRESS_THRESHOLD,
+    EXPOSURE_DAILY_DECAY, EXPOSURE_PLATFORM, MAX_AUTO_ADVANCE_DAYS,
     PER_NPC_ACTION_LLM, REAL_SECONDS_PER_DAY, REFLECTION_INTERVAL_DAYS,
-    RELATION_MIN, RELATION_MAX, TENSION_DAILY_DECAY,
+    RELATION_MIN, RELATION_MAX, STAGE_HYSTERESIS, TENSION_DAILY_DECAY,
+    TRUTH_PRESSURE_PLATFORM,
 )
 from ..llm.client import LLMClient
 from ..models.action import NPCIntention
 from ..models.event import Event, EventConsequences
 from ..models.memory import MemoryType
+from ..models.world import (
+    DEBT_STAGE_THRESHOLDS, EXPOSURE_STAGE_THRESHOLDS, TRUTH_STAGE_THRESHOLDS,
+    stage_of,
+)
 from ..storage.repository import Repository
 from . import (
     conversation_engine, event_engine, memory_engine, npc_engine, relationship_engine,
@@ -88,6 +94,9 @@ def advance_day(
     def _p(msg: str) -> None:
         if on_progress is not None:
             on_progress(msg)
+
+    # Step 0: 先按当前数值结算阶段(让当天事件即反映真实危机阶段,如老存档曝光=100 当天就进 crisis)
+    _settle_stages(repo, game_id)
 
     # Step 1~5: 生成当日事件(三选一模式),并落地后果与记忆。
     if CONVERSATION_MODE:
@@ -184,18 +193,28 @@ def advance_day(
 
 
 def _daily_world_tick(repo: Repository, game_id: str) -> None:
-    """每天结算的"活变量":债务利滚利、紧张度自然回落。
+    """每天结算的"活变量":曝光衰减/平台、债务利滚利/平台、紧张度回落,并结算阶段。
 
-    让 boss_debt / global_tension 真正随时间演化,而非静态背景设定。
+    引擎 A 的核心:让自运行变量"会喘气"(衰减)、"绷到高张力平台即止"(软上限),
+    并把带迟滞的阶段标签持久化,供决策提示按阶段升级局势(见 crisis_directive)。
     """
     world = repo.get_world_state(game_id)
 
-    # 债务每日利息:阿财压力越大,被催得越狠,利息增长越快
-    boss = repo.get_npc(game_id, "boss")
-    interest = DEBT_DAILY_INTEREST
-    if boss and boss.stress >= DEBT_STRESS_THRESHOLD:
-        interest = int(interest * DEBT_HIGH_INTEREST_MULT)
-    repo.add_boss_debt(game_id, interest)
+    # 债务每日利息:阿财压力越大,被催得越狠,利息增长越快;但到达平台后停止累加。
+    if world.boss_debt < DEBT_PLATFORM:
+        boss = repo.get_npc(game_id, "boss")
+        interest = DEBT_DAILY_INTEREST
+        if boss and boss.stress >= DEBT_STRESS_THRESHOLD:
+            interest = int(interest * DEBT_HIGH_INTEREST_MULT)
+        repo.add_boss_debt(game_id, interest)
+
+    # 曝光风险每日自然衰减:无新线索时缓慢回落(A3 衰减,治"贴顶不动"的根)。
+    if world.police_exposure_risk > 0:
+        repo.add_exposure(game_id, -EXPOSURE_DAILY_DECAY)
+    # 曝光"高张力平台":超过平台值则额外回拉,使其在事件稀疏时停在平台附近而非钉死 100(A5)。
+    cur_exposure = repo.get_world_state(game_id).police_exposure_risk
+    if cur_exposure > EXPOSURE_PLATFORM:
+        repo.add_exposure(game_id, -(cur_exposure - EXPOSURE_PLATFORM))
 
     # 全局紧张度自然衰减(无新冲突时慢慢回落,避免单调饱和)
     if world.global_tension > 0:
@@ -203,6 +222,40 @@ def _daily_world_tick(repo: Repository, game_id: str) -> None:
             game_id, "global_tension",
             max(RELATION_MIN, world.global_tension - TENSION_DAILY_DECAY),
         )
+
+    # 真相压力"高张力平台"(A5):超过平台则回拉,绷到平台维持张力等待玩家,不无限爆炸。
+    cur_truth = repo.get_world_state(game_id).truth_pressure
+    if cur_truth > TRUTH_PRESSURE_PLATFORM:
+        repo.add_truth_pressure(game_id, -(cur_truth - TRUTH_PRESSURE_PLATFORM))
+
+    # 结算带迟滞的阶段标签并持久化(供 crisis_directive 注入决策提示)
+    _settle_stages(repo, game_id)
+
+
+def _settle_stages(repo: Repository, game_id: str) -> None:
+    """按当前数值 + 已存阶段(迟滞)重新结算曝光/债务阶段并持久化。
+
+    在每天事件生成【前】调用一次(让当天事件即反映真实阶段,如老存档曝光=100
+    当天就进 crisis),并在每日结算【后】再调用一次(吸收当天衰减/增量)。
+    升阶立即生效、降阶带迟滞,因此重复调用是幂等且安全的。
+    """
+    world = repo.get_world_state(game_id)
+    new_exposure_stage = stage_of(
+        world.police_exposure_risk, EXPOSURE_STAGE_THRESHOLDS,
+        world.exposure_stage, STAGE_HYSTERESIS,
+    )
+    new_debt_stage = stage_of(
+        world.boss_debt, DEBT_STAGE_THRESHOLDS, world.debt_stage, STAGE_HYSTERESIS,
+    )
+    new_truth_stage = stage_of(
+        world.truth_pressure, TRUTH_STAGE_THRESHOLDS, world.truth_stage, STAGE_HYSTERESIS,
+    )
+    if new_exposure_stage != world.exposure_stage:
+        repo.set_world_value(game_id, "exposure_stage", new_exposure_stage)
+    if new_debt_stage != world.debt_stage:
+        repo.set_world_value(game_id, "debt_stage", new_debt_stage)
+    if new_truth_stage != world.truth_stage:
+        repo.set_world_value(game_id, "truth_stage", new_truth_stage)
 
 
 def advance_world(
@@ -346,11 +399,10 @@ def _apply_event_consequences(repo: Repository, game_id: str, event: Event) -> N
     for flag, value in cons.flags.items():
         repo.set_world_value(game_id, f"flag_{flag}", "1" if value else "0")
 
-    # 阿土主线进度
-    if cons.athou_progress_delta:
-        cur = repo.get_world_state(game_id).athou_truth_progress
-        new = max(ATHOU_PROGRESS_MIN, min(ATHOU_PROGRESS_MAX, cur + cons.athou_progress_delta))
-        repo.set_world_value(game_id, "athou_truth_progress", new)
+    # 阿土主线进度:【核心原则:真相归玩家】自运行事件产出的 athou_progress_delta
+    # 一律【不落地】到玩家真相进度;其正向部分转化为真相压力(有平台上限),驱动危机阶段。
+    if cons.athou_progress_delta and cons.athou_progress_delta > 0:
+        repo.add_truth_pressure(game_id, cons.athou_progress_delta)
 
     # 老陈曝光风险(由动作语法程序化裁决的增量)
     if cons.exposure_delta:
