@@ -209,8 +209,10 @@ def _apply_talk(
 
     if on_progress is not None:
         on_progress(
-            f"    · {asker_name} 找 {target_name} 说话 → "
-            f"{target_name}({reply.visible_reaction or '神色如常'}):{reply.reply}"
+            f"    · 对话 {asker_name} ➜ {target_name}"
+            f"｜{asker_name}说:「{utterance}」"
+            f"｜{target_name}答:「{reply.reply}」"
+            f"｜神态:{reply.visible_reaction or '神色如常'}"
         )
     return f"{asker_name}主动找{target_name}说话,{target_name}神态:{reply.visible_reaction or '如常'}"
 

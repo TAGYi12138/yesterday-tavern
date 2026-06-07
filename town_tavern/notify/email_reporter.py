@@ -9,6 +9,7 @@
 - 所有敏感配置(发件邮箱/授权码/收件邮箱)只来自 .env,不写进代码。
 - 发信失败只记录、绝不让守护进程崩溃(汇报是旁路功能,不能影响世界演化)。
 """
+import re
 import smtplib
 import ssl
 import time
@@ -21,6 +22,123 @@ from ..config import (
     EMAIL_AUTH_CODE, EMAIL_ENABLED, EMAIL_INTERVAL_HOURS, EMAIL_SMTP_HOST,
     EMAIL_SMTP_PORT, EMAIL_TO, EMAIL_USER,
 )
+
+# ---------------------------------------------------------------------------
+# 剧本化:把守护进程累积的"时间线文本"解析成易读的剧本(谁对谁说了什么 + 旁白)
+# ---------------------------------------------------------------------------
+# 每条时间线都被守护进程加了 [存档id] 前缀,这里先剥掉。
+_GID_RE = re.compile(r"^\[[^\]]+\]\s*")
+# 一天开始:`第N天 · 酒馆里的人各自开始今天的活动……`
+_DAYSTART_RE = re.compile(r"^第(\d+)天\s*·\s*酒馆里的人")
+# 某一轮社交:`第N天 · 第r/R轮社交……(并发度 X)`
+_ROUND_RE = re.compile(r"^第(\d+)天\s*·\s*第(\d+)/(\d+)轮社交")
+# 对话:`· 对话 甲 ➜ 乙｜甲说:「…」｜乙答:「…」｜神态:…`
+_TALK_RE = re.compile(
+    r"^·\s*对话\s*(.+?)\s*➜\s*(.+?)｜(?:.+?)说:「(.*?)」｜(?:.+?)答:「(.*?)」｜神态:(.*)$"
+)
+# 独自行动:`· 甲 独自暗中调查、打探 → 叙述…[ 查到:…]`
+_SOLO_RE = re.compile(r"^·\s*(.+?)\s*独自(.+?)\s*→\s*(.+)$")
+# 按兵不动:`· 甲 今日按兵不动(…)`
+_IDLE_RE = re.compile(r"^·\s*(.+?)\s*今日按兵不动")
+# 旁白:`[旁白] …`
+_NARRATOR_RE = re.compile(r"^\[旁白\]\s*(.+)$")
+# 当日纪事/事件:`→ 当日纪事《标题》`(下一行通常是概述)
+_DAYNOTE_RE = re.compile(r"^→\s*当日(?:纪事|事件)《(.+?)》")
+# 一天完成:`✓ 第N天完成 → 概述`
+_DAYDONE_RE = re.compile(r"^✓\s*第(\d+)天完成\s*→\s*(.+)$")
+# 数值后果行(关系/压力/进度等):剧本里不展示,过滤掉
+_DATA_PREFIXES = ("关系:", "压力:", "阿土真相进度", "老陈曝光风险", "触发旗标:", "(本次无显著")
+
+
+def _strip_gid(text: str) -> str:
+    return _GID_RE.sub("", (text or "")).strip()
+
+
+def _is_data_line(text: str) -> bool:
+    return text.startswith(_DATA_PREFIXES)
+
+
+def render_screenplay(lines: List[Tuple[str, str]]) -> str:
+    """把 (时间, 文本) 时间线解析成剧本格式。无法解析则作为旁白保留,绝不丢信息。"""
+    out: List[str] = []
+    i, n = 0, len(lines)
+    while i < n:
+        text = _strip_gid(lines[i][1])
+        i += 1
+        if not text:
+            continue
+
+        m = _ROUND_RE.match(text)
+        if m:
+            out.append("")
+            out.append(f"—— 第 {m.group(2)} 轮 ——")
+            continue
+
+        m = _DAYSTART_RE.match(text)
+        if m:
+            out.append("")
+            out.append("═" * 24)
+            out.append(f"　　第 {m.group(1)} 天")
+            out.append("═" * 24)
+            continue
+
+        m = _TALK_RE.match(text)
+        if m:
+            asker, target, utter, reply, react = m.groups()
+            out.append(f"{asker}（对{target}说）：{utter}")
+            react = (react or "").strip()
+            prefix = f"（{react}）" if react and react != "神色如常" else ""
+            out.append(f"{target}：{prefix}{reply}")
+            continue
+
+        m = _SOLO_RE.match(text)
+        if m:
+            actor, verb, rest = m.groups()
+            out.append(f"〔旁白〕{actor}独自{verb}——{rest}")
+            continue
+
+        m = _IDLE_RE.match(text)
+        if m:
+            out.append(f"〔旁白〕{m.group(1)}今日按兵不动。")
+            continue
+
+        m = _NARRATOR_RE.match(text)
+        if m:
+            out.append(f"〔旁白〕{m.group(1)}")
+            continue
+
+        m = _DAYDONE_RE.match(text)
+        if m:
+            out.append("")
+            out.append(f"✦ 第 {m.group(1)} 天落幕：{m.group(2)}")
+            continue
+
+        m = _DAYNOTE_RE.match(text)
+        if m:
+            title = m.group(1)
+            summary = ""
+            if i < n:
+                nxt = _strip_gid(lines[i][1])
+                if nxt and not _is_data_line(nxt) and not (
+                    _ROUND_RE.match(nxt) or _DAYSTART_RE.match(nxt)
+                    or _DAYNOTE_RE.match(nxt) or _DAYDONE_RE.match(nxt)
+                ):
+                    summary = re.sub(r"^经过:", "", nxt)
+                    i += 1
+            out.append("")
+            out.append(f"▌当日纪事《{title}》")
+            if summary:
+                out.append(f"　{summary}")
+            continue
+
+        # 数值后果:剧本里略去
+        if _is_data_line(text):
+            continue
+
+        # 兜底:未识别的散文,作为旁白保留,避免丢失信息
+        out.append(f"〔旁白〕{text}")
+
+    return "\n".join(out).strip()
 
 
 def email_configured() -> Tuple[bool, str]:
@@ -146,9 +264,15 @@ class RunReporter:
             f"{'=' * 40}\n"
         )
         state = f"\n【当前世界快照】\n{state_summary}\n{'=' * 40}\n" if state_summary else ""
-        timeline = "\n【这段时间发生了什么(谁做了什么、说了什么)】\n" + "\n".join(
-            f"[{ts}] {text}" for ts, text in self._lines
-        )
+        # 剧本化正文:谁对谁说了什么(甲说→乙答)+ 旁白叙述,便于阅读理解。
+        script = render_screenplay(self._lines)
+        if script:
+            timeline = "\n【酒馆剧本(谁和谁说了什么)】\n" + script
+        else:
+            # 兜底:解析不出剧本时退回原始流水,绝不丢信息。
+            timeline = "\n【这段时间发生了什么(谁做了什么、说了什么)】\n" + "\n".join(
+                f"[{ts}] {text}" for ts, text in self._lines
+            )
         return header + state + timeline
 
     def flush(self, state_summary: str = "", force: bool = False) -> bool:
