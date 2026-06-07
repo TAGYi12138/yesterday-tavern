@@ -1,0 +1,52 @@
+# 昨日酒馆 · 容器编排
+#
+# 常用命令:
+#   docker compose up -d --build daemon   # 后台启动"自动演化守护进程"
+#   docker compose logs -f daemon         # 实时查看世界每天发生了什么
+#   docker compose run --rm cli           # 进入交互式 CLI 把玩(与守护共享同一存档库)
+#   docker compose down                   # 停止(存档保留在命名卷 tavern-data)
+#
+# 前置:项目根目录需有 .env,至少包含 DEEPSEEK_API_KEY=你的key
+
+services:
+  # 后台自动演化:不开 CLI 也按现实时间持续推进世界
+  daemon:
+    build: .
+    image: yesterday-tavern
+    container_name: yesterday-tavern-daemon
+    env_file:
+      - .env
+    environment:
+      - TOWN_TAVERN_DB=/data/town_tavern.db
+      # 节奏:现实 1800 秒(30 分钟)= 游戏 1 天,给足生成与阅读/操作的时间。
+      - REAL_SECONDS_PER_DAY=1800
+      # 守护进程每 60 秒检查一次是否到点该推进(不足 1 天则零成本空转)。
+      - DAEMON_TICK_SECONDS=60
+    volumes:
+      - tavern-data:/data
+      # 把宿主机最新源码挂进容器,覆盖镜像里烘焙的旧代码(依赖仍用镜像里已装好的)。
+      # 这样改了 .py 无需重建镜像即可生效;本次新增功能仅用标准库,无新依赖。
+      - ./town_tavern:/app/town_tavern
+    # 不随系统/Docker 自启:必须由你手动 `docker compose up -d daemon` 才会跑,
+    # 避免后台无人值守时持续自动调用 API。停止后不会自动复活。
+    restart: "no"
+
+  # 交互式 CLI:按需 `docker compose run --rm cli` 启动,共享同一存档卷
+  cli:
+    build: .
+    image: yesterday-tavern
+    profiles:
+      - cli            # 默认不随 `up` 启动,仅在显式 run 时使用
+    env_file:
+      - .env
+    environment:
+      - TOWN_TAVERN_DB=/data/town_tavern.db
+    volumes:
+      - tavern-data:/data
+    stdin_open: true   # 等价 docker run -i
+    tty: true          # 等价 docker run -t
+    command: ["python", "-m", "town_tavern.main"]
+
+volumes:
+  # 命名卷:存档数据库与 WAL 旁文件持久化于此,容器删除也不丢
+  tavern-data:

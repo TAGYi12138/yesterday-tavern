@@ -1,0 +1,4 @@
+# 依赖清单
+pydantic>=2.5,<3.0      # 运行期数据模型与结构化校验
+openai>=1.30,<2.0       # 用 OpenAI 兼容 SDK 调用 DeepSeek API
+python-dotenv>=1.0,<2.0 # 从 .env 文件加载 API Key 等敏感配置

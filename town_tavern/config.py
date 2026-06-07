@@ -1,0 +1,155 @@
+"""全局配置:API Key、模型名、引擎参数等。
+
+所有敏感信息通过 .env 文件或环境变量注入,绝不硬编码。
+运行前请在项目根目录的 .env 中填写 DEEPSEEK_API_KEY 等配置。
+"""
+import os
+from pathlib import Path
+
+try:
+    # 用于自动加载 .env 文件;未安装时降级为仅读系统环境变量
+    from dotenv import load_dotenv
+except ImportError:
+    load_dotenv = None
+
+# ---------------------------------------------------------------------------
+# 路径配置
+# ---------------------------------------------------------------------------
+# 项目根目录(town_tavern/)
+BASE_DIR = Path(__file__).resolve().parent
+# 数据文件目录
+DATA_DIR = BASE_DIR / "data"
+# 加载 .env(优先项目根,其次包目录),其中存放 API Key / URL 等敏感配置
+if load_dotenv is not None:
+    load_dotenv(BASE_DIR.parent / ".env")
+    load_dotenv(BASE_DIR / ".env")
+
+# SQLite 数据库文件路径(在 .env 加载后计算,以便读到 .env 里的覆盖值)。
+# 支持用环境变量 TOWN_TAVERN_DB 覆盖,便于容器里把存档落到可挂载的卷(如 /data)。
+DB_PATH = Path(os.environ.get("TOWN_TAVERN_DB", str(BASE_DIR / "town_tavern.db")))
+
+# ---------------------------------------------------------------------------
+# DeepSeek / LLM 配置
+# ---------------------------------------------------------------------------
+# API Key:从环境变量读取,缺失时在 client 初始化阶段报错
+DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
+# DeepSeek API 基础地址(OpenAI 兼容接口)
+DEEPSEEK_BASE_URL = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
+# 模型名:按用户要求默认 deepseek-v4-pro。
+# 注意:若官方实际模型名不同(如 deepseek-chat),改这一行或设置环境变量即可。
+DEEPSEEK_MODEL = os.environ.get("DEEPSEEK_MODEL", "deepseek-v4-pro")
+
+# LLM 调用温度:叙事层可稍高,结构化裁决层在调用处单独压低
+LLM_TEMPERATURE = float(os.environ.get("LLM_TEMPERATURE", "0.8"))
+# 结构化输出解析失败时的重试次数
+LLM_JSON_RETRIES = 1
+# 请求超时(秒)
+LLM_TIMEOUT = 60
+
+# ---------------------------------------------------------------------------
+# 活世界 / 自主时钟参数
+# ---------------------------------------------------------------------------
+# 现实时间到游戏天数的换算:现实多少秒 = 游戏 1 天(挂机长草)。
+# 默认 600 秒(10 分钟)推进 1 天;可用环境变量调小以便快速体验。
+REAL_SECONDS_PER_DAY = int(os.environ.get("REAL_SECONDS_PER_DAY", "600"))
+# 单次进入时按现实时间自动补推的最大天数,避免久未登录一次性炸 API。
+MAX_AUTO_ADVANCE_DAYS = int(os.environ.get("MAX_AUTO_ADVANCE_DAYS", "5"))
+# 手动"离开/快进"时允许的最大天数。
+MAX_MANUAL_ADVANCE_DAYS = int(os.environ.get("MAX_MANUAL_ADVANCE_DAYS", "10"))
+
+# ---------------------------------------------------------------------------
+# 引擎参数
+# ---------------------------------------------------------------------------
+# 构造对话上下文时取最近多少条短期记忆
+RECENT_MEMORY_LIMIT = 5
+# 构造对话上下文时取多少条重要长期记忆
+LONGTERM_MEMORY_LIMIT = 3
+# 单个 NPC 短期记忆超过该数量时触发压缩
+MEMORY_COMPRESS_THRESHOLD = 12
+# 反思机制:每隔多少天,NPC 自动总结处境并更新长期目标
+REFLECTION_INTERVAL_DAYS = int(os.environ.get("REFLECTION_INTERVAL_DAYS", "3"))
+# 群像行动层:开启后每天为"每个 NPC"各跑一次 LLM,把其意图落成具体行动(含小后果),
+# 再综合众人行动合成当日焦点事件。涌现更强、个体更鲜活,但每天 LLM 调用数翻倍。
+# 关闭则回退到旧的"单一核心动作"模式(每天仅 1 次事件 LLM 调用)。
+PER_NPC_ACTION_LLM = os.environ.get("PER_NPC_ACTION_LLM", "1") not in ("0", "false", "False")
+
+# ---------------------------------------------------------------------------
+# 酒馆社交对话模式(Generative Agents 风格):每天 NPC 之间多轮真实对话
+# ---------------------------------------------------------------------------
+# 开启后,每天用"多轮社交"驱动世界:每轮每个 NPC 自行决定【找人对话】或【独自行动】,
+# 对话双方各自为自己说话(不代笔),旁白 AI 只记录"谁找了谁 + 神态"(绝不泄露内容),
+# 次日各 NPC 据此(+自己的私密记忆)再决策。优先级高于 PER_NPC_ACTION_LLM。
+CONVERSATION_MODE = os.environ.get("CONVERSATION_MODE", "1") not in ("0", "false", "False")
+# 每天进行的社交轮数(每轮:各人决策一次 + 被点名者各回一次 + 旁白总结一次)。
+CONV_ROUNDS = int(os.environ.get("CONV_ROUNDS", "2"))
+# 独自行动(暗中调查/掩盖/回避)的结果是否调用"裁决 LLM"细化(读权威世界状态、受程序 clamp);
+# 关闭则只用程序规则裁决数值,行动经过用中性模板描述,零额外调用。
+CONV_REFEREE_LLM = os.environ.get("CONV_REFEREE_LLM", "1") not in ("0", "false", "False")
+# 社交并发度:同一轮内互不依赖的 LLM 调用(各人决策 / 各条回复+裁决)并行发起的最大线程数。
+# 全部 DB 读写仍在主线程串行完成,只把"纯网络调用"放到线程池,显著压低单日耗时。设为 1 即串行。
+CONV_CONCURRENCY = int(os.environ.get("CONV_CONCURRENCY", "5"))
+# 关系四维 + 怀疑度的取值区间
+RELATION_MIN = 0
+RELATION_MAX = 100
+# 压力取值区间
+STRESS_MIN = 0
+STRESS_MAX = 100
+# 阿土主线进度区间
+ATHOU_PROGRESS_MIN = 0
+ATHOU_PROGRESS_MAX = 100
+
+# ---------------------------------------------------------------------------
+# 玩家行动力 / 玩家自身状态(让"每次介入都有代价")
+# ---------------------------------------------------------------------------
+# 玩家每个游戏日的行动点(AP)上限。AP 耗尽需"离开/快进"开启新一天。
+PLAYER_DAILY_ENERGY = int(os.environ.get("PLAYER_DAILY_ENERGY", "3"))
+# 玩家初始金钱
+PLAYER_START_MONEY = int(os.environ.get("PLAYER_START_MONEY", "3000"))
+# 玩家状态(声望/嫌疑)区间
+PLAYER_STAT_MIN = 0
+PLAYER_STAT_MAX = 100
+
+# ---------------------------------------------------------------------------
+# 活变量:债务 / 曝光 / 紧张度(每天自动演化,并被行为联动)
+# ---------------------------------------------------------------------------
+# 阿财债务每日基础利息
+DEBT_DAILY_INTEREST = int(os.environ.get("DEBT_DAILY_INTEREST", "5000"))
+# 阿财压力高于该值时,利滚利更狠(乘数)
+DEBT_STRESS_THRESHOLD = 70
+DEBT_HIGH_INTEREST_MULT = 1.6
+# 债务危险阈值(用于叙事升级与事件偏置)
+DEBT_WARN = 350000
+DEBT_DANGER = 500000
+DEBT_CRITICAL = 700000
+# 曝光风险危险阈值
+EXPOSURE_WATCH = 50      # 老陈开始留意/监视
+EXPOSURE_DANGER = 70     # 老陈主动设法掩盖
+EXPOSURE_CRITICAL = 90   # 老陈可能栽赃/摊牌
+# 全局紧张度每日自然衰减(避免单调累积至饱和)
+TENSION_DAILY_DECAY = 2
+
+# ---------------------------------------------------------------------------
+# 后台自动演化守护进程(daemon)参数
+# ---------------------------------------------------------------------------
+# 守护进程轮询节拍(秒):每隔多久检查一次各存档是否该按现实时间补推世界。
+# 应明显小于「MAX_AUTO_ADVANCE_DAYS × REAL_SECONDS_PER_DAY」,以免长间隔被封顶截断丢天。
+# 节拍内若未满 1 个游戏日则零成本空转(不调用 LLM)。
+DAEMON_TICK_SECONDS = int(os.environ.get("DAEMON_TICK_SECONDS", "60"))
+# 守护进程启动时若库中没有任何存档,是否自动新建一局世界。
+DAEMON_AUTO_CREATE = os.environ.get("DAEMON_AUTO_CREATE", "1") not in ("0", "false", "False")
+
+# ---------------------------------------------------------------------------
+# 运行汇报邮件(QQ 邮箱 SMTP):守护进程每隔一段时间把"谁做了什么/说了什么"发到邮箱
+# ---------------------------------------------------------------------------
+# 总开关。授权码等敏感信息只放 .env,绝不写进代码仓库。
+EMAIL_ENABLED = os.environ.get("EMAIL_ENABLED", "0") not in ("0", "false", "False")
+# QQ 邮箱 SMTP(SSL)固定参数
+EMAIL_SMTP_HOST = os.environ.get("EMAIL_SMTP_HOST", "smtp.qq.com")
+EMAIL_SMTP_PORT = int(os.environ.get("EMAIL_SMTP_PORT", "465"))
+# 发件邮箱(QQ 账号)与其 SMTP 授权码(非登录密码),均从 .env 注入
+EMAIL_USER = os.environ.get("EMAIL_USER", "")
+EMAIL_AUTH_CODE = os.environ.get("EMAIL_AUTH_CODE", "")
+# 收件邮箱(可与发件相同)
+EMAIL_TO = os.environ.get("EMAIL_TO", "")
+# 汇报间隔(小时):每隔多久发送一封运行汇报。默认 1 小时,可在 .env 自行调整。
+EMAIL_INTERVAL_HOURS = float(os.environ.get("EMAIL_INTERVAL_HOURS", "1"))

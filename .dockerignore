@@ -1,0 +1,18 @@
+# 切勿把密钥打进镜像;运行时用 env_file/-e 注入
+.env
+
+# 运行期生成的存档与 WAL 旁文件(应走挂载卷,而非进镜像)
+*.db
+*.db-wal
+*.db-shm
+
+# Python 缓存与虚拟环境
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# 版本控制与杂项
+.git/
+.gitignore
+*.md

@@ -1,0 +1,30 @@
+{
+  "world_state": {
+    "current_day": 1,
+    "global_tension": 20,
+    "athou_truth_progress": 0,
+    "police_exposure_risk": 30,
+    "boss_debt": 300000
+  },
+  "initial_relationships": [
+    { "from": "boss",     "to": "police",   "trust": 30, "fear": 70, "resentment": 35, "affection": 10, "suspicion": 20 },
+    { "from": "police",   "to": "boss",     "trust": 25, "fear": 10, "resentment": 15, "affection": 20, "suspicion": 40 },
+    { "from": "boss",     "to": "sister",   "trust": 65, "fear": 20, "resentment": 5,  "affection": 70, "suspicion": 10 },
+    { "from": "sister",   "to": "boss",     "trust": 55, "fear": 15, "resentment": 30, "affection": 75, "suspicion": 55 },
+    { "from": "reporter", "to": "police",   "trust": 5,  "fear": 35, "resentment": 50, "affection": 0,  "suspicion": 80 },
+    { "from": "police",   "to": "reporter", "trust": 0,  "fear": 30, "resentment": 45, "affection": 0,  "suspicion": 75 },
+    { "from": "reporter", "to": "gambler",  "trust": 25, "fear": 10, "resentment": 5,  "affection": 10, "suspicion": 40 },
+    { "from": "gambler",  "to": "reporter", "trust": 20, "fear": 5,  "resentment": 0,  "affection": 5,  "suspicion": 30 },
+    { "from": "gambler",  "to": "police",   "trust": 10, "fear": 55, "resentment": 40, "affection": 0,  "suspicion": 50 },
+    { "from": "police",   "to": "gambler",  "trust": 5,  "fear": 25, "resentment": 35, "affection": 0,  "suspicion": 65 },
+    { "from": "boss",     "to": "gambler",  "trust": 10, "fear": 45, "resentment": 30, "affection": 5,  "suspicion": 40 },
+    { "from": "sister",   "to": "police",   "trust": 30, "fear": 25, "resentment": 10, "affection": 15, "suspicion": 35 }
+  ],
+  "initial_player_relationships": [
+    { "from": "boss",     "to": "player", "trust": 20, "fear": 5,  "resentment": 0, "affection": 10, "suspicion": 15 },
+    { "from": "police",   "to": "player", "trust": 10, "fear": 0,  "resentment": 0, "affection": 5,  "suspicion": 35 },
+    { "from": "reporter", "to": "player", "trust": 25, "fear": 0,  "resentment": 0, "affection": 15, "suspicion": 20 },
+    { "from": "gambler",  "to": "player", "trust": 15, "fear": 0,  "resentment": 0, "affection": 10, "suspicion": 25 },
+    { "from": "sister",   "to": "player", "trust": 30, "fear": 0,  "resentment": 0, "affection": 20, "suspicion": 15 }
+  ]
+}
