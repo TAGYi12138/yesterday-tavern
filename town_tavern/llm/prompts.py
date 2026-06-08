@@ -436,11 +436,13 @@ def build_conversation_reply_prompt(
     longterm: List[Memory],
     world: WorldState,
     rel_to_asker: Optional[Relationship] = None,
+    history: str = "",
 ) -> tuple[str, str]:
     """构造"被搭话者回复"的 (system, user) prompt。返回 ConversationReply。
 
     铁律:你只为自己说话、只写自己对对方的感受,绝不替对方写反应。
     rel_to_asker 给出"你对搭话者"的关系,让回复的亲疏/戒备符合既有立场。
+    history(进阶版多回合):本场对话已发生的你来我往实录,让追问回合接得上文。
     """
     # NPC↔NPC 不渲染「外乡玩家」第一印象(B2);仅当搭话者就是玩家时才注入
     reply_audience = "player" if asker_id == "player" else ""
@@ -458,12 +460,14 @@ def build_conversation_reply_prompt(
         f"好感{rel_to_asker.affection} 怀疑{rel_to_asker.suspicion}\n"
         if rel_to_asker is not None else ""
     )
+    history_block = f"【这场对话到此为止的实录(接着往下回应)】\n{history}\n\n" if history else ""
     user = (
         f"【场景】你们都在『昨日酒馆』店内,{asker_name} 正当面对你说话。\n"
         f"【当前状态】压力:{npc.stress}/100,当前目标:{npc.current_goal}\n"
         f"{rel_line}"
         f"{world.summary_text()}\n\n"
         f"{_memories_text(recent, longterm)}\n\n"
+        f"{history_block}"
         f"【{asker_name} 对你说】{utterance}\n\n"
         "请按以下 JSON 回复:\n"
         "{\n"
@@ -473,10 +477,58 @@ def build_conversation_reply_prompt(
         ' "trust":0,"fear":0,"resentment":0,"affection":0,"suspicion":0},\n'
         '  "memory_write": null 或 {"npc_id": "' + npc.id + '",'
         ' "content": "若值得记住,写下你记住的内容", "importance": 0-100,'
-        ' "emotional_tag": "情绪"}\n'
+        ' "emotional_tag": "情绪"},\n'
+        '  "wants_to_continue": true/false（你觉得这场对话还没说完、还想继续就 true,'
+        '话已说尽就 false）\n'
         "}\n"
         "关系增量用 -8~8 的小幅;被追问敏感话题增 suspicion,被真诚相待增 trust/affection,"
         "被威胁增 fear/resentment。"
+    )
+    return system, user
+
+
+def build_conversation_followup_prompt(
+    npc: NPC,
+    target_id: str,
+    target_name: str,
+    history: str,
+    world: WorldState,
+    rel_to_target: Optional[Relationship] = None,
+) -> tuple[str, str]:
+    """构造"发话者(A)听到回复后是否继续追问"的 (system, user) prompt。返回 ConversationFollowup。
+
+    进阶版多回合对话用:A 已经开了口、B 也回了话,这里让 A 决定是否再追一句。
+    铁律同样适用——A 只为自己说话,绝不替 B 写任何反应。
+    """
+    reply_audience = "player" if target_id == "player" else ""
+    system = (
+        f"{GUARDRAIL}\n\n"
+        f"你正在扮演小镇酒馆故事里的一个角色。你刚才主动找 {target_name} 说话,"
+        "他已经回应了你。你要依据自己的性格、目标与记忆,决定这场对话是否继续。\n"
+        f"{npc.fixed_profile_text(audience=reply_audience)}\n\n"
+        "【铁律】你只能为【你自己】说话,绝不能替 "
+        f"{target_name} 写他的话或反应。"
+    )
+    rel_line = (
+        f"【你对 {target_name} 的关系】"
+        f"信任{rel_to_target.trust} 恐惧{rel_to_target.fear} 怨恨{rel_to_target.resentment} "
+        f"好感{rel_to_target.affection} 怀疑{rel_to_target.suspicion}\n"
+        if rel_to_target is not None else ""
+    )
+    user = (
+        f"【场景】你们都在『昨日酒馆』店内,你正和 {target_name} 面对面交谈。\n"
+        f"【当前状态】压力:{npc.stress}/100,当前目标:{npc.current_goal}\n"
+        f"{rel_line}"
+        f"{world.summary_text()}\n\n"
+        f"【这场对话到此为止的实录】\n{history}\n\n"
+        "请决定你接下来怎么办,输出 JSON:\n"
+        "{\n"
+        '  "continue_talking": true/false（还有要追问/回应/交代的就 true,'
+        '目的已达到、话已说尽或没必要再纠缠就 false）,\n'
+        '  "utterance": "continue_talking 为 true 时:你接着对他说/追问的话(自然中文,60字内);否则留空"\n'
+        "}\n"
+        "只有当你确实还有动机(继续试探/逼问/解释/拉拢/警告)时才继续;"
+        "若对方已明显回避、或你已问到想要的、或再说也无益,就收口(false)。"
     )
     return system, user
 

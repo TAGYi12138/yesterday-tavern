@@ -94,6 +94,16 @@ CONV_REFEREE_LLM = os.environ.get("CONV_REFEREE_LLM", "1") not in ("0", "false",
 # 社交并发度:同一轮内互不依赖的 LLM 调用(各人决策 / 各条回复+裁决)并行发起的最大线程数。
 # 全部 DB 读写仍在主线程串行完成,只把"纯网络调用"放到线程池,显著压低单日耗时。设为 1 即串行。
 CONV_CONCURRENCY = int(os.environ.get("CONV_CONCURRENCY", "5"))
+
+# --- 进阶版:多回合对话(高张力对子才你来我往,普通寒暄保持一来一回) ---
+# 一次对话里"A 说 + B 回 = 1 个回合"。普通对子(寒暄/低张力)只进行 1 个回合,
+# 高张力对子(冲突参与者 / 关系里 怀疑·怨恨·恐惧 任一较高)最多进行 TALK_MAX_TURNS_HIGH 个回合。
+# 是否继续追问由 B 回复里的 wants_to_continue + A 追问时的 continue_talking 共同决定(任一收口即止),
+# 因此实际回合数 ∈ [1, TALK_MAX_TURNS_HIGH],既解决"太单薄",又不会让所有人都啰嗦、token 飙升。
+TALK_MAX_TURNS_BASE = int(os.environ.get("TALK_MAX_TURNS_BASE", "1"))
+TALK_MAX_TURNS_HIGH = int(os.environ.get("TALK_MAX_TURNS_HIGH", "3"))
+# 关系五维里"对抗维度"(怀疑/怨恨/恐惧)达到该阈值即视为高张力对子,给更长对话预算。
+TALK_TENSION_THRESHOLD = int(os.environ.get("TALK_TENSION_THRESHOLD", "40"))
 # 关系四维 + 怀疑度的取值区间
 RELATION_MIN = 0
 RELATION_MAX = 100
