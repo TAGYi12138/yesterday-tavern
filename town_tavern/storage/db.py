@@ -160,6 +160,23 @@ def init_db(conn: sqlite3.Connection) -> None:
         """
     )
 
+    # #3 玩家已知线索:与"系统真实 flag"严格隔离。系统 flag 变化【不会】自动写入这里;
+    # 只有玩家主动观察/询问/偷听/交易/被告知,才记一条。这样守住"真相归玩家"。
+    # certainty 0-100 表示玩家对该线索的把握程度;source 记录获取途径;day_found 记发现日。
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS player_known_clues (
+            game_id TEXT NOT NULL,
+            id TEXT NOT NULL,
+            title TEXT NOT NULL,
+            source TEXT DEFAULT '',
+            certainty INTEGER DEFAULT 50,
+            day_found INTEGER DEFAULT 0,
+            PRIMARY KEY (game_id, id)
+        )
+        """
+    )
+
     _migrate(conn)
     conn.commit()
 
