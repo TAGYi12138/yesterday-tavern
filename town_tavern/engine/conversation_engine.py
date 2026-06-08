@@ -336,8 +336,11 @@ def run_social_day(
         if on_progress is not None:
             on_progress(msg)
 
-    npcs = repo.get_all_npcs(game_id)
-    name_of = {n.id: n.name for n in npcs}
+    # PR2:只有"在场"(active)的 NPC 参与社交决策池;hiding/away 者退出当日社交。
+    # 但 name_of/valid_ids 仍含全部 NPC,便于在场者提及/指涉不在场的人。
+    all_npcs = repo.get_all_npcs(game_id)
+    npcs = [n for n in all_npcs if n.is_present()]
+    name_of = {n.id: n.name for n in all_npcs}
     valid_ids = set(name_of)
 
     agg = EventConsequences()      # 当日所有已应用后果的汇总(仅展示用)
@@ -353,8 +356,13 @@ def run_social_day(
             recent = repo.get_recent_memories(game_id, npc.id)
             longterm = repo.get_longterm_memories(game_id, npc.id)
             others = _others_text(repo, game_id, npc.id)
+            # PR5:注入"该 NPC 自己的"昨日个人摘要(知识隔离),让今日行动接得上昨天。
+            personal_yesterday = memory_engine.build_personal_yesterday_summary(
+                repo, game_id, npc.id, day
+            )
             system, user = prompts.build_turn_decision_prompt(
-                npc, recent, longterm, world, others, r, CONV_ROUNDS
+                npc, recent, longterm, world, others, r, CONV_ROUNDS,
+                personal_yesterday=personal_yesterday,
             )
             dec_jobs.append((system, user, TurnDecision))
         decisions = _gather_json(llm, dec_jobs)

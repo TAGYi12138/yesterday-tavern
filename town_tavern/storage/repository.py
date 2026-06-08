@@ -17,6 +17,7 @@ from ..config import (
     PLAYER_STAT_MIN,
     PLAYER_START_MONEY,
     RECENT_MEMORY_LIMIT,
+    RECENT_RUMOR_CAP,
     RELATION_MAX,
     RELATION_MIN,
     STRESS_MAX,
@@ -24,6 +25,7 @@ from ..config import (
     TRUTH_PRESSURE_MAX,
     TRUTH_PRESSURE_MIN,
 )
+from ..models.conflict import Conflict, ConflictState
 from ..models.event import Event, EventConsequences, EventType
 from ..models.memory import Memory, MemoryType
 from ..models.npc import NPC
@@ -165,7 +167,49 @@ class Repository:
             speech_style=row["speech_style"] if "speech_style" in keys else "",
             current_goal=row["current_goal"],
             stress=row["stress"], money=row["money"],
+            status=row["status"] if "status" in keys else "active",
+            status_until_day=row["status_until_day"] if "status_until_day" in keys else 0,
         )
+
+    def get_present_npcs(self, game_id: str) -> List[NPC]:
+        """返回此刻在场(status==active)的 NPC——hiding/away 退出社交决策池(PR2)。"""
+        return [n for n in self.get_all_npcs(game_id) if n.is_present()]
+
+    def set_npc_status(
+        self, game_id: str, npc_id: str, status: str, until_day: int = 0
+    ) -> None:
+        """设置某 NPC 的出场状态(active/hiding/away)及到期天。"""
+        self.conn.execute(
+            "UPDATE npcs SET status = ?, status_until_day = ? WHERE game_id = ? AND id = ?",
+            (status, until_day, game_id, npc_id),
+        )
+        self.conn.commit()
+
+    def expire_npc_statuses(self, game_id: str, day: int) -> List[str]:
+        """把到期(status_until_day>0 且 day>=until_day)的非 active 状态复位为 active。
+
+        返回本次复位回 active 的 npc_id 列表(供日志/记忆使用)。
+        """
+        rows = self.conn.execute(
+            """
+            SELECT id FROM npcs
+            WHERE game_id = ? AND status != 'active'
+              AND status_until_day > 0 AND status_until_day <= ?
+            """,
+            (game_id, day),
+        ).fetchall()
+        revived = [r["id"] for r in rows]
+        if revived:
+            self.conn.execute(
+                """
+                UPDATE npcs SET status = 'active', status_until_day = 0
+                WHERE game_id = ? AND status != 'active'
+                  AND status_until_day > 0 AND status_until_day <= ?
+                """,
+                (game_id, day),
+            )
+            self.conn.commit()
+        return revived
 
     def update_npc_stress(self, game_id: str, npc_id: str, delta: int) -> None:
         npc = self.get_npc(game_id, npc_id)
@@ -263,15 +307,32 @@ class Repository:
     def get_recent_memories(
         self, game_id: str, npc_id: str, limit: int = RECENT_MEMORY_LIMIT
     ) -> List[Memory]:
+        """取最近的短期记忆,并对"传闻(RUMOR)"做降噪(PR5)。
+
+        传闻多为"听说……"的低价值二手消息,容易在 recent 窗口里刷屏挤掉 NPC
+        自己的行动/对话记忆。这里多取一些候选,保留全部非传闻,传闻只保留最近
+        RECENT_RUMOR_CAP 条,再按"天/写入序"倒序截到 limit。
+        """
         rows = self.conn.execute(
             """
             SELECT * FROM memories
             WHERE game_id = ? AND npc_id = ? AND is_long_term = 0
             ORDER BY day DESC, id DESC LIMIT ?
             """,
-            (game_id, npc_id, limit),
+            (game_id, npc_id, max(limit * 3, limit)),
         ).fetchall()
-        return [self._row_to_memory(r) for r in rows]
+        mems = [self._row_to_memory(r) for r in rows]  # 已按 新→旧 排序
+        kept: List[Memory] = []
+        rumor_kept = 0
+        for m in mems:
+            if m.type == MemoryType.RUMOR:
+                if rumor_kept >= RECENT_RUMOR_CAP:
+                    continue
+                rumor_kept += 1
+            kept.append(m)
+            if len(kept) >= limit:
+                break
+        return kept
 
     def get_longterm_memories(
         self,
@@ -305,6 +366,24 @@ class Repository:
         return [self._row_to_memory(r) for r in fact_rows] + [
             self._row_to_memory(r) for r in reflection_rows
         ]
+
+    def get_memories_by_day(
+        self, game_id: str, npc_id: str, day: int
+    ) -> List[Memory]:
+        """取某 NPC 在某一天写下的全部记忆(含已压缩前的短期记忆),按写入顺序。
+
+        供「昨日个人摘要」(PR5)与冲突推进信号识别(PR3)使用,严守知识隔离:
+        只读该 NPC 自己的记忆。
+        """
+        rows = self.conn.execute(
+            """
+            SELECT * FROM memories
+            WHERE game_id = ? AND npc_id = ? AND day = ?
+            ORDER BY id ASC
+            """,
+            (game_id, npc_id, day),
+        ).fetchall()
+        return [self._row_to_memory(r) for r in rows]
 
     def get_shortterm_memories(self, game_id: str, npc_id: str) -> List[Memory]:
         """获取该 NPC 全部短期记忆(用于压缩判断)。"""
@@ -399,6 +478,82 @@ class Repository:
         )
 
     # ------------------------------------------------------------------
+    # 冲突状态机(P0)
+    # ------------------------------------------------------------------
+    def get_conflict(self, game_id: str, conflict_id: str) -> Optional[Conflict]:
+        row = self.conn.execute(
+            "SELECT * FROM conflicts WHERE game_id = ? AND id = ?",
+            (game_id, conflict_id),
+        ).fetchone()
+        return self._row_to_conflict(row) if row else None
+
+    def get_active_conflicts(self, game_id: str) -> List[Conflict]:
+        """返回所有【未落槌】(非 RESOLVED_*)的冲突。"""
+        rows = self.conn.execute(
+            "SELECT * FROM conflicts WHERE game_id = ?", (game_id,)
+        ).fetchall()
+        return [c for c in (self._row_to_conflict(r) for r in rows) if not c.is_resolved()]
+
+    def upsert_conflict(self, game_id: str, conflict: Conflict) -> None:
+        self.conn.execute(
+            """
+            INSERT INTO conflicts (game_id, id, kind, participants, state,
+                                   age_in_state, max_stall_days, created_day)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(game_id, id) DO UPDATE SET
+                kind=excluded.kind, participants=excluded.participants,
+                state=excluded.state, age_in_state=excluded.age_in_state,
+                max_stall_days=excluded.max_stall_days
+            """,
+            (
+                game_id, conflict.id, conflict.kind,
+                json.dumps(conflict.participants, ensure_ascii=False),
+                conflict.state.value, conflict.age_in_state,
+                conflict.max_stall_days, conflict.created_day,
+            ),
+        )
+        self.conn.commit()
+
+    def add_conflict_log(
+        self, game_id: str, conflict_id: str, day: int,
+        from_state: str, to_state: str,
+        trigger_event: str = "", reason: str = "", consequence_summary: str = "",
+    ) -> int:
+        cur = self.conn.execute(
+            """
+            INSERT INTO conflict_logs (game_id, conflict_id, day, from_state, to_state,
+                                       trigger_event, reason, consequence_summary)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (game_id, conflict_id, day, from_state, to_state,
+             trigger_event, reason, consequence_summary),
+        )
+        self.conn.commit()
+        return cur.lastrowid
+
+    def get_conflict_logs(self, game_id: str, conflict_id: str) -> List[dict]:
+        rows = self.conn.execute(
+            """
+            SELECT day, from_state, to_state, trigger_event, reason, consequence_summary
+            FROM conflict_logs WHERE game_id = ? AND conflict_id = ?
+            ORDER BY id ASC
+            """,
+            (game_id, conflict_id),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    @staticmethod
+    def _row_to_conflict(row: sqlite3.Row) -> Conflict:
+        return Conflict(
+            id=row["id"], kind=row["kind"],
+            participants=json.loads(row["participants"]) if row["participants"] else [],
+            state=ConflictState(row["state"]),
+            age_in_state=row["age_in_state"],
+            max_stall_days=row["max_stall_days"],
+            created_day=row["created_day"],
+        )
+
+    # ------------------------------------------------------------------
     # 世界状态
     # ------------------------------------------------------------------
     def get_world_value(self, game_id: str, key: str) -> Optional[str]:
@@ -437,13 +592,25 @@ class Repository:
             exposure_stage=_str("exposure_stage", "normal"),
             debt_stage=_str("debt_stage", "stable"),
             truth_stage=_str("truth_stage", "latent"),
+            crisis_days=_int("crisis_days", 0),
         )
 
     def add_boss_debt(self, game_id: str, delta: int) -> int:
-        """调整阿财债务(不低于 0),返回新值。"""
+        """调整阿财债务(不低于 0),返回新值。
+
+        B1 债务单源:`world_state.boss_debt` 是唯一权威源;这里把阿财 NPC 的
+        `money` 同步镜像为 `-boss_debt`,避免出现「世界说欠 46.8 万、阿财 money
+        仍停在 -30 万」的双源不一致。任何调债务都走此处,二者恒等。
+        """
         cur = self.get_world_state(game_id).boss_debt
         new = max(0, cur + delta)
         self.set_world_value(game_id, "boss_debt", new)
+        # 同步镜像到阿财 NPC 的 money(派生值,不作为权威源)
+        self.conn.execute(
+            "UPDATE npcs SET money = ? WHERE game_id = ? AND id = 'boss'",
+            (-new, game_id),
+        )
+        self.conn.commit()
         return new
 
     def add_exposure(self, game_id: str, delta: int) -> int:

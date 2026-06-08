@@ -87,6 +87,25 @@ class WorldState(BaseModel):
     exposure_stage: str = Field(default="normal", description="曝光风险阶段(带迟滞)")
     debt_stage: str = Field(default="stable", description="债务阶段(带迟滞)")
     truth_stage: str = Field(default="latent", description="真相压力阶段(带迟滞)")
+    # PR4:危机连续天数。曝光进入 crisis 阶段后逐日累加;离开 crisis 即清零。
+    # 用于按倒计时触发逐级加重的硬事件(威胁证人→搜查扣押→失踪/抢证→强制结算)。
+    crisis_days: int = Field(default=0, description="连续处于曝光危机阶段的天数")
+
+    def tension_target(self) -> int:
+        """PR6:按当前三条态势【阶段】算出全局紧张度的"目标档位"(0-100)。
+
+        紧张度不再只靠事件 +1/+3 单调累积,而是朝一个由 曝光/债务/真相压力 阶段
+        决定的目标值平滑靠拢(取三者档位的最大值)。事件可制造短时高于目标的尖峰,
+        随后自然回落到目标附近,既"会喘气"又能反映真实局势。
+        """
+        exposure_tier = {"normal": 15, "watching": 40, "suppressing": 65, "crisis": 85}
+        debt_tier = {"stable": 10, "pressing": 30, "closing": 55, "seizing": 75}
+        truth_tier = {"latent": 10, "stirring": 35, "closing_in": 55, "boiling": 80}
+        return max(
+            exposure_tier.get(self.exposure_stage, 15),
+            debt_tier.get(self.debt_stage, 10),
+            truth_tier.get(self.truth_stage, 10),
+        )
 
     def debt_level(self) -> str:
         """把债务金额映射为危险等级标签。"""

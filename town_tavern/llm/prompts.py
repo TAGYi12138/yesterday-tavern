@@ -55,7 +55,7 @@ def build_dialogue_prompt(
     system = (
         f"{GUARDRAIL}\n\n"
         f"你正在扮演小镇酒馆故事里的一个角色。\n"
-        f"{npc.fixed_profile_text()}\n\n"
+        f"{npc.fixed_profile_text(audience='player')}\n\n"
         "你要以这个角色的口吻、依据其性格与当前情绪,自然地回应玩家。"
     )
     user = (
@@ -103,7 +103,7 @@ def build_initiative_prompt(
     system = (
         f"{GUARDRAIL}\n\n"
         f"你正在扮演小镇酒馆故事里的一个角色。\n"
-        f"{npc.fixed_profile_text()}\n\n"
+        f"{npc.fixed_profile_text(audience='player')}\n\n"
         "此刻玩家(酒馆的常客)刚走进店里。是你【主动】开口搭话,"
         "不是被动回答。开场白要符合你的性格与当下心境,自然、有动机,"
         "不要寒暄客套,而要透出你真正在意的事。"
@@ -382,6 +382,7 @@ def build_turn_decision_prompt(
     others_text: str,
     round_no: int,
     total_rounds: int,
+    personal_yesterday: str = "",
 ) -> tuple[str, str]:
     """构造"某 NPC 本轮要做什么"的 (system, user) prompt。返回 TurnDecision。
 
@@ -399,10 +400,13 @@ def build_turn_decision_prompt(
     # 只在曝光/债务进入相应阶段时才出现,引导对应 NPC 的防守/施压姿态,不揭真相。
     directive = world.crisis_directive()
     directive_block = f"【当前局势压力(请据此调整你的行动姿态)】\n{directive}\n\n" if directive else ""
+    # PR5:只属于"你自己"的昨日个人摘要(知识隔离),帮助今天的行动接得上昨天。
+    yesterday_block = f"【你昨天自己做/经历的事(只有你知道)】\n{personal_yesterday}\n\n" if personal_yesterday else ""
     user = (
         f"【场景】此刻你在『昨日酒馆』店内(镇上唯一的酒馆,你们都在这儿)。\n"
         f"【当前状态】压力:{npc.stress}/100,当前目标:{npc.current_goal}\n"
         f"世界:{world.summary_text()}\n\n"
+        f"{yesterday_block}"
         f"{directive_block}"
         f"【此刻同在酒馆、你可以找其搭话的人(附你对各人的关系,据此判断该亲近/试探/回避谁)】\n"
         f"{others_text}\n\n"
@@ -438,11 +442,13 @@ def build_conversation_reply_prompt(
     铁律:你只为自己说话、只写自己对对方的感受,绝不替对方写反应。
     rel_to_asker 给出"你对搭话者"的关系,让回复的亲疏/戒备符合既有立场。
     """
+    # NPC↔NPC 不渲染「外乡玩家」第一印象(B2);仅当搭话者就是玩家时才注入
+    reply_audience = "player" if asker_id == "player" else ""
     system = (
         f"{GUARDRAIL}\n\n"
         f"你正在扮演小镇酒馆故事里的一个角色。{asker_name} 此刻主动来找你说话,"
         "你要以自己的口吻、依据自己的性格与记忆来回应。\n"
-        f"{npc.fixed_profile_text()}\n\n"
+        f"{npc.fixed_profile_text(audience=reply_audience)}\n\n"
         "【铁律】你只能为【你自己】说话和反应,绝不能替 "
         f"{asker_name} 写他的话或他的反应。关系变化只写【你对他】的感受。"
     )

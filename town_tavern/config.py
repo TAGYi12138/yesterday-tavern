@@ -62,6 +62,8 @@ MAX_MANUAL_ADVANCE_DAYS = int(os.environ.get("MAX_MANUAL_ADVANCE_DAYS", "10"))
 # ---------------------------------------------------------------------------
 # 构造对话上下文时取最近多少条短期记忆
 RECENT_MEMORY_LIMIT = 5
+# PR5:recent 记忆里"传闻(RUMOR)"最多保留几条,避免低价值传闻刷屏挤掉自身行动/对话记忆。
+RECENT_RUMOR_CAP = int(os.environ.get("RECENT_RUMOR_CAP", "2"))
 # 构造对话上下文时取多少条重要长期记忆(兼容旧逻辑/压缩用)
 LONGTERM_MEMORY_LIMIT = 3
 # 引擎 C(C2)记忆分槽:长期记忆按"槽位"组装,避免反思刷屏挤掉关键事实。
@@ -131,6 +133,22 @@ EXPOSURE_DANGER = 70     # 老陈主动设法掩盖
 EXPOSURE_CRITICAL = 90   # 老陈可能栽赃/摊牌
 # 全局紧张度每日自然衰减(避免单调累积至饱和)
 TENSION_DAILY_DECAY = 2
+# PR6:global_tension 改为按态势分段计算后,每日朝目标值平滑的最大步长(防跳变)。
+TENSION_SMOOTH_STEP = int(os.environ.get("TENSION_SMOOTH_STEP", "15"))
+
+# ---------------------------------------------------------------------------
+# PR2:NPC 运行期状态(active/hiding/away)默认持续天数
+# ---------------------------------------------------------------------------
+# away(跑路/离场)默认持续天数;hiding(蛰伏/躲藏)默认持续天数。
+# 期间该 NPC 退出社交决策池,到期自动回 active。
+NPC_AWAY_DEFAULT_DAYS = int(os.environ.get("NPC_AWAY_DEFAULT_DAYS", "3"))
+NPC_HIDING_DEFAULT_DAYS = int(os.environ.get("NPC_HIDING_DEFAULT_DAYS", "2"))
+
+# ---------------------------------------------------------------------------
+# PR3:冲突状态机(P0,当前只用于录音交易 deal_recording)
+# ---------------------------------------------------------------------------
+# 录音交易在某一状态最多拖延几天:超过则强制落槌(北极星:最多 5 天必产生不可逆结果)。
+DEAL_RECORDING_MAX_STALL_DAYS = int(os.environ.get("DEAL_RECORDING_MAX_STALL_DAYS", "5"))
 
 # ---------------------------------------------------------------------------
 # 引擎 A:阈值状态机 + 衰减 + 平台(让自运行变量"会喘气、绷到高张力平台即止")

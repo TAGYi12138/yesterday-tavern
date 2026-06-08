@@ -34,9 +34,24 @@ class NPC(BaseModel):
     current_goal: str = Field(..., description="当前目标(可随剧情变化)")
     stress: int = Field(default=50, description="压力 0-100")
     money: int = Field(default=0, description="持有金钱")
+    # PR2:运行期出场状态。active 正常在场;hiding 蛰伏躲藏;away 跑路/离场。
+    # hiding/away 期间退出社交决策池;到期(status_until_day)自动回 active。
+    status: str = Field(default="active", description="出场状态 active/hiding/away")
+    status_until_day: int = Field(
+        default=0, description="状态到期天(含):day 达到此值后自动回 active;0 表示无限期"
+    )
 
-    def fixed_profile_text(self) -> str:
-        """生成用于 prompt 的固定档案文本(不含运行期状态)。"""
+    def is_present(self) -> bool:
+        """是否在社交场中(可被点名对话/可主动行动)。hiding/away 视为不在场。"""
+        return self.status == "active"
+
+    def fixed_profile_text(self, audience: str = "") -> str:
+        """生成用于 prompt 的固定档案文本(不含运行期状态)。
+
+        first_impression(对「外乡玩家」的最初看法)只在【面对玩家】时注入——
+        audience == "player" 才渲染;NPC↔NPC 的决策/对话场景一律不带这句,
+        避免出现「对另一个 NPC 也喊外乡人」的身份串台(B2)。
+        """
         lines = [
             f"你叫{self.name},{self.age}岁,职业是{self.job}。",
             f"性格:{self.personality}",
@@ -47,6 +62,6 @@ class NPC(BaseModel):
         ]
         if self.speech_style:
             lines.append(f"你的说话与行为习惯:{self.speech_style}")
-        if self.first_impression:
+        if audience == "player" and self.first_impression:
             lines.append(f"你对眼前这个外乡玩家的最初看法:{self.first_impression}")
         return "\n".join(lines)

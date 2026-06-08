@@ -33,6 +33,26 @@ def write_memory(
     return repo.add_memory(game_id, memory)
 
 
+def build_personal_yesterday_summary(
+    repo: Repository, game_id: str, npc_id: str, today: int, max_items: int = 3
+) -> str:
+    """生成「该 NPC 自己」的昨日个人摘要(PR5),严守知识隔离。
+
+    只读这个 NPC 在 (today-1) 当天写下的【自己的】记忆,绝不汇总他人或全局事件,
+    挑重要度最高的几条拼成一句提示,供其今日决策"接得上昨天"。无昨日记忆则返回空串。
+    """
+    if today <= 1:
+        return ""
+    mems = repo.get_memories_by_day(game_id, npc_id, today - 1)
+    if not mems:
+        return ""
+    mems.sort(key=lambda m: m.importance, reverse=True)
+    picked = [m.content.strip() for m in mems[:max_items] if m.content.strip()]
+    if not picked:
+        return ""
+    return "我昨天:" + "；".join(picked)
+
+
 def compress_memories_if_needed(
     repo: Repository, game_id: str, npc_id: str, day: int, llm=None
 ) -> bool:
