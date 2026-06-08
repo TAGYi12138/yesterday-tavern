@@ -383,11 +383,15 @@ def build_turn_decision_prompt(
     round_no: int,
     total_rounds: int,
     personal_yesterday: str = "",
+    conflict_brief: str = "",
 ) -> tuple[str, str]:
     """构造"某 NPC 本轮要做什么"的 (system, user) prompt。返回 TurnDecision。
 
     NPC 根据自己【已知的信息】(只有自己的记忆 + 公开观察)决定:找谁说话,
     或独自去做一件不需要对话的事(暗中调查/掩盖/回避)。
+
+    conflict_brief(#2):该 NPC【本人参与】的冲突当前状态(含已结算)。注入后可避免
+    冲突落槌后第二天还像没发生一样继续谈旧交易;严守知识隔离——只含其自己的冲突。
     """
     system = (
         f"{GUARDRAIL}\n\n"
@@ -402,11 +406,14 @@ def build_turn_decision_prompt(
     directive_block = f"【当前局势压力(请据此调整你的行动姿态)】\n{directive}\n\n" if directive else ""
     # PR5:只属于"你自己"的昨日个人摘要(知识隔离),帮助今天的行动接得上昨天。
     yesterday_block = f"【你昨天自己做/经历的事(只有你知道)】\n{personal_yesterday}\n\n" if personal_yesterday else ""
+    # #2:你本人卷入的冲突当前状态(含已结算),防止你接着谈一桩已经了结/作废的旧事。
+    conflict_block = f"【{conflict_brief}】\n\n" if conflict_brief else ""
     user = (
         f"【场景】此刻你在『昨日酒馆』店内(镇上唯一的酒馆,你们都在这儿)。\n"
         f"【当前状态】压力:{npc.stress}/100,当前目标:{npc.current_goal}\n"
         f"世界:{world.summary_text()}\n\n"
         f"{yesterday_block}"
+        f"{conflict_block}"
         f"{directive_block}"
         f"【此刻同在酒馆、你可以找其搭话的人(附你对各人的关系,据此判断该亲近/试探/回避谁)】\n"
         f"{others_text}\n\n"
