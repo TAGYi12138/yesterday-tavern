@@ -393,6 +393,21 @@ def _apply_solo(
     return f"{actor_name}独自{_SOLO_HINT[verb]},神色专注"
 
 
+def _humanize_ids(text: str, npc_names: dict) -> str:
+    """把旁白文本里偶尔残留的英文 npc_id(如 police/reporter)兜底替换成中文名。
+
+    旁白 LLM 偶尔直接吐出 id 而非角色名;这里在落地前统一替换,保证当日纪事与传闻
+    都用中文名。先替换较长的 id,避免一个 id 是另一个的子串时误伤。
+    """
+    if not text:
+        return text
+    for npc_id in sorted(npc_names, key=len, reverse=True):
+        name = npc_names[npc_id]
+        if npc_id and name and npc_id != name:
+            text = text.replace(npc_id, name)
+    return text
+
+
 def _run_narrator(
     repo: Repository, llm: LLMClient, game_id: str, day: int,
     acts_lines: List[str], all_notes: list,
@@ -421,6 +436,9 @@ def _run_narrator(
 
     for note in obs.notes:
         note.actors = [a for a in note.actors if a in valid_ids]
+        # 兜底:把旁白文本里残留的英文 id 换成中文名(就地改,使当日纪事汇总也一并修正)
+        note.event_core = _humanize_ids(note.event_core, npc_names)
+        note.demeanor = _humanize_ids(note.demeanor, npc_names)
         # event_core 缺失时退回 demeanor,保证当日纪事仍有可读内容(不阻断主流程)
         core = (note.event_core or "").strip() or note.demeanor
         all_notes.append(note)

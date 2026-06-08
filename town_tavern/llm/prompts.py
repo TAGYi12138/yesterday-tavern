@@ -549,7 +549,8 @@ def build_narrator_prompt(acts_text: str, npc_names: dict) -> tuple[str, str]:
         "1. 只陈述可观察到的事实:谁找了谁、谁独自做了什么、动了什么物件、神态如何。\n"
         "2. 严禁写出或暗示对话的【具体内容】(你根本听不到)。\n"
         "3. 严禁做价值判断、严禁推测动机或后果,只白描。\n"
-        f"【合法角色】{name_map}(actors 只能用这些 id:{legal_ids})"
+        f"【合法角色】{name_map}(actors 字段只能填这些 id:{legal_ids};"
+        "但 event_core 与 demeanor 的描述文字里【必须用中文名】,绝不能出现英文 id)"
     )
     user = (
         f"【这一轮里实际发生的互动(仅供你判断谁和谁有来往,不要照抄内容)】\n{acts_text}\n\n"

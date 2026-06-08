@@ -141,6 +141,19 @@ def test_followup_stop_ends_conversation(game):
     assert "聊了几个回合" not in line
 
 
+def test_humanize_ids_replaces_raw_ids_with_names():
+    """旁白文本里残留的英文 id 必须被兜底替换成中文名。"""
+    names = {"police": "老陈", "reporter": "小林", "gambler": "阿龙"}
+    text = "阿财在police对面坐下,reporter将手指停在酒杯边缘,gambler凑近"
+    out = ce._humanize_ids(text, names)
+    assert "police" not in out and "reporter" not in out and "gambler" not in out
+    assert "老陈" in out and "小林" in out and "阿龙" in out
+
+
+def test_humanize_ids_noop_on_empty():
+    assert ce._humanize_ids("", {"police": "老陈"}) == ""
+
+
 def test_reply_delta_always_from_target_to_asker(game):
     """红线/不代笔:每个回合落地的关系增量必是 B→A,A 不替 B 写,也不反向。"""
     repo, gid = game
