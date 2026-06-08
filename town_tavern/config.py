@@ -126,10 +126,44 @@ PLAYER_STAT_MIN = 0
 PLAYER_STAT_MAX = 100
 
 # ---------------------------------------------------------------------------
+# 节奏模式(pacing):一套预设统一控制"世界推进多快",玩家 demo 可一键切换。
+# 用环境变量 GAME_PACE 选择;任一单项仍可被它自己的专用环境变量覆盖(显式优先)。
+#   debug_fast  —— 快速爆发,方便测试(= 现有默认行为,保持向后兼容)
+#   demo_normal —— 10~15 天出大事件,适合玩家试玩
+#   slow_burn   —— 30 天以上慢热
+# 默认仍为 debug_fast(与历史行为一致);玩家 demo 建议设 GAME_PACE=demo_normal。
+# ---------------------------------------------------------------------------
+GAME_PACE = os.environ.get("GAME_PACE", "debug_fast").strip().lower()
+
+_PACE_PRESETS = {
+    # conflict_min_days:冲突自创建起至少拖几天才允许"落槌"(防止世界爆太快;危机截断可越过它)。
+    # conflict_max_days:单状态最多拖几天,超过强制落槌(北极星上限)。
+    # crisis_escalation_interval:危机硬事件逐级升级的间隔天数。
+    "debug_fast":  {"conflict_min_days": 0, "conflict_max_days": 5, "crisis_escalation_interval": 1, "debt_interest_per_day": 5000, "exposure_decay_per_day": 3},
+    "demo_normal": {"conflict_min_days": 3, "conflict_max_days": 5, "crisis_escalation_interval": 2, "debt_interest_per_day": 8000, "exposure_decay_per_day": 3},
+    "slow_burn":   {"conflict_min_days": 5, "conflict_max_days": 8, "crisis_escalation_interval": 3, "debt_interest_per_day": 3000, "exposure_decay_per_day": 5},
+}
+_PACE = _PACE_PRESETS.get(GAME_PACE, _PACE_PRESETS["debug_fast"])
+
+
+def _paced_int(env_key: str, pace_key: str) -> int:
+    """取节奏参数:显式环境变量优先,否则用当前节奏预设值。"""
+    v = os.environ.get(env_key)
+    return int(v) if v is not None else int(_PACE[pace_key])
+
+
+# 冲突"最早可落槌"地板与"最多拖延"上限(供冲突状态机调速)。
+CONFLICT_MIN_DAYS = max(0, _paced_int("CONFLICT_MIN_DAYS", "conflict_min_days"))
+CONFLICT_MAX_DAYS = max(1, _paced_int("CONFLICT_MAX_DAYS", "conflict_max_days"))
+# 危机逐级硬事件的升级间隔(天)。debug_fast=1 即逐天升级(历史行为)。
+CRISIS_ESCALATION_INTERVAL = max(1, _paced_int("CRISIS_ESCALATION_INTERVAL", "crisis_escalation_interval"))
+
+# ---------------------------------------------------------------------------
 # 活变量:债务 / 曝光 / 紧张度(每天自动演化,并被行为联动)
 # ---------------------------------------------------------------------------
-# 阿财债务每日基础利息
-DEBT_DAILY_INTEREST = int(os.environ.get("DEBT_DAILY_INTEREST", "5000"))
+# 阿财债务每日基础利息(随节奏模式变化;DEBT_INTEREST_PER_DAY 为同义别名)
+DEBT_DAILY_INTEREST = _paced_int("DEBT_DAILY_INTEREST", "debt_interest_per_day")
+DEBT_INTEREST_PER_DAY = DEBT_DAILY_INTEREST
 # 阿财压力高于该值时,利滚利更狠(乘数)
 DEBT_STRESS_THRESHOLD = 70
 DEBT_HIGH_INTEREST_MULT = 1.6
@@ -158,13 +192,18 @@ NPC_HIDING_DEFAULT_DAYS = int(os.environ.get("NPC_HIDING_DEFAULT_DAYS", "2"))
 # PR3:冲突状态机(P0,当前只用于录音交易 deal_recording)
 # ---------------------------------------------------------------------------
 # 录音交易在某一状态最多拖延几天:超过则强制落槌(北极星:最多 5 天必产生不可逆结果)。
-DEAL_RECORDING_MAX_STALL_DAYS = int(os.environ.get("DEAL_RECORDING_MAX_STALL_DAYS", "5"))
+# 默认跟随节奏模式的 CONFLICT_MAX_DAYS;仍可用专用环境变量单独覆盖。
+DEAL_RECORDING_MAX_STALL_DAYS = int(
+    os.environ.get("DEAL_RECORDING_MAX_STALL_DAYS", str(CONFLICT_MAX_DAYS))
+)
 
 # ---------------------------------------------------------------------------
 # 引擎 A:阈值状态机 + 衰减 + 平台(让自运行变量"会喘气、绷到高张力平台即止")
 # ---------------------------------------------------------------------------
 # 曝光风险每日自然衰减:无新线索时缓慢回落,避免单调贴顶("系统说摊牌、世界无反应")。
-EXPOSURE_DAILY_DECAY = int(os.environ.get("EXPOSURE_DAILY_DECAY", "3"))
+# 随节奏模式变化(EXPOSURE_DECAY_PER_DAY 为同义别名)。
+EXPOSURE_DAILY_DECAY = _paced_int("EXPOSURE_DAILY_DECAY", "exposure_decay_per_day")
+EXPOSURE_DECAY_PER_DAY = EXPOSURE_DAILY_DECAY
 # 曝光"高张力平台":超过此值后,自运行不再无限累加,而是被额外回拉到平台附近维持紧张,
 # 而非永远钉死在 100。玩家行动仍可把它顶得更高。
 EXPOSURE_PLATFORM = int(os.environ.get("EXPOSURE_PLATFORM", "90"))
