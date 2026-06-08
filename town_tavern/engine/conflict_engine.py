@@ -15,10 +15,11 @@
 from typing import List, Optional, Tuple
 
 from ..config import (
-    DEAL_RECORDING_MAX_STALL_DAYS, EXPOSURE_CRITICAL, EXPOSURE_DANGER,
+    CONFLICT_MAX_DAYS, CONFLICT_MIN_DAYS, DEAL_RECORDING_MAX_STALL_DAYS,
+    EXPOSURE_CRITICAL, EXPOSURE_DANGER,
 )
 from ..models.conflict import (
-    Conflict, ConflictState, is_resolved, next_progress_state,
+    Conflict, ConflictState, is_resolved, next_progress_state, state_sentence,
 )
 from ..models.consequence import (
     Consequence, MemorySpec, NpcStatusChange, RelationshipChange,
@@ -35,6 +36,17 @@ _INTERFERER = "police"
 # 触发阈值:真相压力或曝光起来后,这桩买卖才会浮出水面被启动。
 _TRIGGER_TRUTH_PRESSURE = 30
 _TRIGGER_EXPOSURE_STAGES = {"watching", "suppressing", "crisis"}
+
+# ---------------------------------------------------------------------------
+# 第二条冲突:账本摊牌(boss_sister_ledger)—— 阿财(瞒债)↔ 淑芬(查账)的家庭线。
+# 复用同一套状态机骨架与统一后果应用器,吃同样的红线(绝不写真相进度)与节奏地板。
+# ---------------------------------------------------------------------------
+BOSS_SISTER_LEDGER = "boss_sister_ledger"
+_BOSS = "boss"        # 阿财:瞒着妹妹欠了地下钱庄的钱
+_SISTER = "sister"    # 淑芬:早觉得账本对不上,迟早摊牌
+# 触发阈值:家里气氛(全局紧张度)起来、或阿财压力高到藏不住时,这条线浮现。
+_LEDGER_TRIGGER_TENSION = 25
+_LEDGER_TRIGGER_BOSS_STRESS = 75
 
 
 # ---------------------------------------------------------------------------
@@ -122,6 +134,8 @@ def decide_transition(
     holder_present: bool,
     buyer_present: bool,
     has_progress_signal: bool,
+    days_since_created: int = 999,
+    min_days: int = 0,
 ) -> Tuple[ConflictState, str, Optional[Consequence]]:
     """决定本日冲突如何变化。返回(新状态, 原因, 终态后果或 None)。
 
@@ -132,12 +146,16 @@ def decide_transition(
     4. 单状态拖延超过 max_stall_days → 强制落槌(按局势裁定结局)。
     5. 有推进信号 → 进一阶;若已在末位(EXCHANGE_ATTEMPT)再推进 → 成功落槌。
     6. 否则 → 僵持(age+1)。
+
+    节奏地板(min_days):冲突自创建起未满 min_days 时,【不允许】通过"临门一脚"提早
+    落槌(防止世界爆太快);但拖延封顶(北极星上限)与老陈危机截断不受此限制。
+    默认 min_days=0,即不设地板(历史行为,保持向后兼容)。
     """
     state = conflict.state
     if is_resolved(state):
         return state, "已落槌", None
 
-    # 2) 老陈濒临败露,会不惜代价当场截断交易
+    # 2) 老陈濒临败露,会不惜代价当场截断交易(危机截断不受节奏地板限制)
     if exposure_risk >= EXPOSURE_CRITICAL or exposure_stage == "crisis":
         c, _summary = _resolution_consequence(ConflictState.RESOLVED_INTERRUPTED)
         return ConflictState.RESOLVED_INTERRUPTED, "老陈逼近至摊牌,当场截断交接", c
@@ -147,7 +165,7 @@ def decide_transition(
         who = "赌徒" if not holder_present else "记者"
         return state, f"{who}不在场,交易僵持", None
 
-    # 4) 拖延封顶 → 强制结算(北极星:不无限僵持)
+    # 4) 拖延封顶 → 强制结算(北极星:不无限僵持,封顶是硬上限,不受地板限制)
     if conflict.age_in_state >= conflict.max_stall_days:
         if exposure_risk >= EXPOSURE_DANGER:
             forced = ConflictState.RESOLVED_INTERRUPTED
@@ -164,6 +182,9 @@ def decide_transition(
     # 5) 有推进信号:进一阶,或在末位完成交接
     if has_progress_signal:
         if state == ConflictState.EXCHANGE_ATTEMPT:
+            # 节奏地板:未满 min_days 时不让交易提早落槌,在临门一脚处再压一压。
+            if days_since_created < min_days:
+                return state, "万事俱备,但火候未到,交接再压一压", None
             c, _summary = _resolution_consequence(ConflictState.RESOLVED_SUCCESS)
             return ConflictState.RESOLVED_SUCCESS, "临门一脚,交接完成", c
         return next_progress_state(state), "交易向前推进了一步", None
@@ -235,6 +256,174 @@ def force_resolve_deal_recording(
     return f"[冲突·录音交易] {from_state.value} → {forced.value}(强制结算:{reason})"
 
 
+def _ledger_resolution_consequence(state: ConflictState) -> Tuple[Consequence, str]:
+    """账本摊牌的终态 → 后果契约 + 一句中文摘要(同样不写真相进度)。"""
+    if state == ConflictState.RESOLVED_TRUST:
+        return (
+            Consequence(
+                flags={"ledger_reconciled": True},
+                world_changes={"global_tension": -8},
+                relationship_changes=[
+                    RelationshipChange(from_npc=_SISTER, to_npc=_BOSS, trust=25, resentment=-10),
+                    RelationshipChange(from_npc=_BOSS, to_npc=_SISTER, trust=15),
+                ],
+                memories=[
+                    MemorySpec(npc_id=_BOSS, content="账本的事终于跟妹妹摊开说了,她没走,说一起扛——这些年第一次松口气。", importance=80, emotional_tag="释然", related_npc=_SISTER),
+                    MemorySpec(npc_id=_SISTER, content="哥哥总算把欠债的事说清了,我气他瞒我,但更怕这个家散——决定一起想办法。", importance=80, emotional_tag="心疼", related_npc=_BOSS),
+                ],
+            ),
+            "兄妹坦诚相对、决定一起扛:家里那道裂缝暂时弥合,全局紧张度回落。",
+        )
+    if state == ConflictState.RESOLVED_BREAKDOWN:
+        return (
+            Consequence(
+                flags={"family_breakdown": True},
+                world_changes={"global_tension": 12},
+                relationship_changes=[
+                    RelationshipChange(from_npc=_SISTER, to_npc=_BOSS, trust=-30, resentment=25),
+                ],
+                memories=[
+                    MemorySpec(npc_id=_SISTER, content="他瞒了我这么久、欠了这么多——我们大吵一架,我不知道这个家还算不算家。", importance=85, emotional_tag="心碎", related_npc=_BOSS),
+                    MemorySpec(npc_id=_BOSS, content="妹妹把话挑明了,我没接住,她摔门走了,酒馆里头一次这么静。", importance=85, emotional_tag="懊悔", related_npc=_SISTER),
+                ],
+            ),
+            "摊牌崩裂:兄妹信任骤降、怨恨升起,家裂开一道口子,全局紧张度上扬。",
+        )
+    # RESOLVED_COVERUP
+    return (
+        Consequence(
+            flags={"ledger_coverup": True},
+            world_changes={"global_tension": 4},
+            relationship_changes=[
+                RelationshipChange(from_npc=_BOSS, to_npc=_SISTER, fear=8),
+            ],
+            memories=[
+                MemorySpec(npc_id=_BOSS, content="又把账糊弄过去了,妹妹半信半疑——这层窗户纸早晚还得破,但今天先撑住。", importance=70, emotional_tag="心虚", related_npc=_SISTER),
+            ],
+        ),
+        "阿财继续粉饰、淑芬暂被瞒住:这一页先翻过去,但窗户纸迟早要破。",
+    )
+
+
+def decide_ledger_transition(
+    conflict: Conflict,
+    *,
+    tension: int,
+    boss_present: bool,
+    sister_present: bool,
+    has_progress_signal: bool,
+    days_since_created: int = 999,
+    min_days: int = 0,
+) -> Tuple[ConflictState, str, Optional[Consequence]]:
+    """账本摊牌的纯决策函数(可单测,无需 LLM/DB)。返回(新状态, 原因, 终态后果或 None)。
+
+    优先级:
+    1. 已落槌 → 不动。
+    2. 兄妹任一不在场 → 僵持(无法摊牌)。
+    3. 单状态拖延封顶 → 强制落槌(北极星硬上限)。
+    4. 有推进信号 → 进一阶;在末位(DEMAND_TRUTH)再推进 → 按张力裁定结局。
+    5. 否则僵持。
+    节奏地板同录音线:未满 min_days 不允许提早从 DEMAND_TRUTH 落槌(封顶不受限)。
+    """
+    state = conflict.state
+    if is_resolved(state):
+        return state, "已落槌", None
+
+    if not (boss_present and sister_present):
+        who = "阿财" if not boss_present else "淑芬"
+        return state, f"{who}不在场,账本的事摊不开", None
+
+    # 拖延封顶:不无限僵持。张力极高→崩裂;否则被阿财糊弄过去(掩盖)。
+    if conflict.age_in_state >= conflict.max_stall_days:
+        if tension >= 70:
+            forced, reason = ConflictState.RESOLVED_BREAKDOWN, "拖延封顶且家里气氛紧绷,终于摊牌崩裂"
+        else:
+            forced, reason = ConflictState.RESOLVED_COVERUP, "拖延封顶,阿财又把账糊弄了过去"
+        c, _summary = _ledger_resolution_consequence(forced)
+        return forced, reason, c
+
+    if has_progress_signal:
+        if state == ConflictState.DEMAND_TRUTH:
+            if days_since_created < min_days:
+                return state, "话到嘴边,兄妹谁也没先开口,再僵一僵", None
+            # 临门一脚的结局由家里张力裁定:高→崩裂,中→重建信任,低→被糊弄掩盖。
+            if tension >= 70:
+                resolved, reason = ConflictState.RESOLVED_BREAKDOWN, "逼到摊牌,话太重,家裂了"
+            elif tension >= 40:
+                resolved, reason = ConflictState.RESOLVED_TRUST, "终于把话说开,兄妹决定一起扛"
+            else:
+                resolved, reason = ConflictState.RESOLVED_COVERUP, "阿财服软又遮掩,这事暂被压下"
+            c, _summary = _ledger_resolution_consequence(resolved)
+            return resolved, reason, c
+        return next_progress_state(state, BOSS_SISTER_LEDGER), "账本的事又往前戳破了一层", None
+
+    return state, "今日相安无事,账本的事没挑明", None
+
+
+def ensure_boss_sister_ledger_conflict(repo: Repository, game_id: str, day: int) -> Optional[Conflict]:
+    """家里气氛/阿财压力到阈值时,惰性创建账本摊牌冲突(SUSPICION)。一桩只发生一次。"""
+    existing = repo.get_conflict(game_id, BOSS_SISTER_LEDGER)
+    if existing is not None:
+        return existing
+    world = repo.get_world_state(game_id)
+    boss = repo.get_npc(game_id, _BOSS)
+    triggered = (
+        world.global_tension >= _LEDGER_TRIGGER_TENSION
+        or (boss is not None and boss.stress >= _LEDGER_TRIGGER_BOSS_STRESS)
+    )
+    if not triggered:
+        return None
+    conflict = Conflict(
+        id=BOSS_SISTER_LEDGER, kind=BOSS_SISTER_LEDGER,
+        participants=[_BOSS, _SISTER], state=ConflictState.SUSPICION,
+        age_in_state=0, max_stall_days=CONFLICT_MAX_DAYS,
+        created_day=day,
+    )
+    repo.upsert_conflict(game_id, conflict)
+    repo.add_conflict_log(
+        game_id, BOSS_SISTER_LEDGER, day, "(none)", ConflictState.SUSPICION.value,
+        trigger_event="家务浮现", reason="家里气氛紧绷/阿财压力藏不住,账本对不上的事开始发酵",
+    )
+    return conflict
+
+
+def _detect_ledger_progress_signal(repo: Repository, game_id: str, day: int) -> bool:
+    """从阿财/淑芬各自当天记忆里探测账本线是否被往前戳破(严守知识隔离)。"""
+    keywords = ("账", "账本", "借据", "欠", "钱庄", "坦白", "摊牌", "瞒", "积蓄", "对不上")
+    for npc_id in (_BOSS, _SISTER):
+        for mem in repo.get_memories_by_day(game_id, npc_id, day):
+            if any(k in mem.content for k in keywords):
+                return True
+    return False
+
+
+def describe_conflicts_for_npc(repo: Repository, game_id: str, npc_id: str) -> str:
+    """#2:为某 NPC 汇总【它本人参与的】冲突当前状态(含已结算),用于注入决策上下文。
+
+    严守知识隔离:只列出 npc_id 是参与者的冲突;旁观者不会自动得知别人冲突的结算细节。
+    返回多行文本(无相关冲突则返回空串)。已落槌的冲突给出"别再当没发生"的人话提示,
+    正是为了防止结算后 NPC 第二天还接着谈旧交易。
+    """
+    name_of = {n.id: n.name for n in repo.get_all_npcs(game_id)}
+    lines: List[str] = []
+    for conflict in repo.get_all_conflicts(game_id):
+        if npc_id not in conflict.participants:
+            continue
+        sentence = state_sentence(conflict.state)
+        if not sentence:
+            continue
+        label = "录音交易" if conflict.kind == DEAL_RECORDING else "账本摊牌"
+        status = "已了结" if conflict.is_resolved() else "进行中"
+        others = "、".join(
+            name_of.get(p, p) for p in conflict.participants if p != npc_id
+        )
+        who = f"(与{others})" if others else ""
+        lines.append(f"- 【{label}·{status}】{who} {sentence}")
+    if not lines:
+        return ""
+    return "你正卷入的事(请据此说话,别谈已经了结/作废的旧情节):\n" + "\n".join(lines)
+
+
 def _detect_progress_signal(repo: Repository, game_id: str, day: int) -> bool:
     """从【参与者各自当天的记忆】里探测交易是否往前走了一步(严守知识隔离)。
 
@@ -249,30 +438,51 @@ def _detect_progress_signal(repo: Repository, game_id: str, day: int) -> bool:
     return False
 
 
+def _decide_for_conflict(repo: Repository, game_id: str, day: int, conflict: Conflict):
+    """按 kind 分派到对应纯决策函数,返回(新状态, 原因, 后果)。"""
+    world = repo.get_world_state(game_id)
+    days_since_created = day - conflict.created_day
+    if conflict.kind == BOSS_SISTER_LEDGER:
+        boss = repo.get_npc(game_id, _BOSS)
+        sister = repo.get_npc(game_id, _SISTER)
+        return decide_ledger_transition(
+            conflict,
+            tension=world.global_tension,
+            boss_present=bool(boss and boss.is_present()),
+            sister_present=bool(sister and sister.is_present()),
+            has_progress_signal=_detect_ledger_progress_signal(repo, game_id, day),
+            days_since_created=days_since_created,
+            min_days=CONFLICT_MIN_DAYS,
+        )
+    # 默认:录音交易
+    holder = repo.get_npc(game_id, _HOLDER)
+    buyer = repo.get_npc(game_id, _BUYER)
+    return decide_transition(
+        conflict,
+        exposure_risk=world.police_exposure_risk,
+        exposure_stage=world.exposure_stage,
+        holder_present=bool(holder and holder.is_present()),
+        buyer_present=bool(buyer and buyer.is_present()),
+        has_progress_signal=_detect_progress_signal(repo, game_id, day),
+        days_since_created=days_since_created,
+        min_days=CONFLICT_MIN_DAYS,
+    )
+
+
 def tick_conflicts(repo: Repository, game_id: str, day: int) -> List[str]:
-    """每日推进所有未落槌冲突一格(当前仅 deal_recording)。返回可读摘要行。"""
+    """每日推进所有未落槌冲突一格(录音交易 + 账本摊牌)。返回可读摘要行。"""
     lines: List[str] = []
     ensure_deal_recording_conflict(repo, game_id, day)
+    ensure_boss_sister_ledger_conflict(repo, game_id, day)
 
     for conflict in repo.get_active_conflicts(game_id):
-        if conflict.id != DEAL_RECORDING:
-            continue  # 当前只接管录音交易
-        world = repo.get_world_state(game_id)
-        holder = repo.get_npc(game_id, _HOLDER)
-        buyer = repo.get_npc(game_id, _BUYER)
-        new_state, reason, consequence = decide_transition(
-            conflict,
-            exposure_risk=world.police_exposure_risk,
-            exposure_stage=world.exposure_stage,
-            holder_present=bool(holder and holder.is_present()),
-            buyer_present=bool(buyer and buyer.is_present()),
-            has_progress_signal=_detect_progress_signal(repo, game_id, day),
-        )
+        label = "账本摊牌" if conflict.kind == BOSS_SISTER_LEDGER else "录音交易"
+        new_state, reason, consequence = _decide_for_conflict(repo, game_id, day, conflict)
         from_state = conflict.state
 
         consequence_summary = ""
         if consequence is not None:
-            applied = apply_consequence(repo, game_id, consequence, day, source=DEAL_RECORDING)
+            applied = apply_consequence(repo, game_id, consequence, day, source=conflict.id)
             consequence_summary = "; ".join(applied)
 
         if new_state != from_state:
@@ -280,14 +490,14 @@ def tick_conflicts(repo: Repository, game_id: str, day: int) -> List[str]:
             conflict.age_in_state = 0
             repo.upsert_conflict(game_id, conflict)
             repo.add_conflict_log(
-                game_id, DEAL_RECORDING, day, from_state.value, new_state.value,
+                game_id, conflict.id, day, from_state.value, new_state.value,
                 trigger_event="每日推进", reason=reason,
                 consequence_summary=consequence_summary,
             )
-            lines.append(f"[冲突·录音交易] {from_state.value} → {new_state.value}({reason})")
+            lines.append(f"[冲突·{label}] {from_state.value} → {new_state.value}({reason})")
         else:
             conflict.age_in_state += 1
             repo.upsert_conflict(game_id, conflict)
-            lines.append(f"[冲突·录音交易] 维持 {from_state.value}(第{conflict.age_in_state}天:{reason})")
+            lines.append(f"[冲突·{label}] 维持 {from_state.value}(第{conflict.age_in_state}天:{reason})")
 
     return lines
