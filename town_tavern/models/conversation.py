@@ -57,6 +57,27 @@ class ConversationReply(BaseModel):
     memory_write: Optional[MemoryWrite] = Field(
         default=None, description="若这次对话值得你记住,写下你记住的内容"
     )
+    wants_to_continue: bool = Field(
+        default=False,
+        description="这场对话是否未尽:你觉得还有要追问/回应/交代的就 true,话已说完、无意再聊就 false",
+    )
+
+
+class ConversationFollowup(BaseModel):
+    """进阶版多回合对话里,发话者(A)在听到对方(B)的回复后,是否继续追问及追问内容。
+
+    只代表 A 自己接下来要说的话,绝不替 B 写任何反应。continue_talking 为 false
+    或 utterance 为空时,这场对话即收口。
+    """
+
+    continue_talking: bool = Field(
+        default=False,
+        description="你是否还想继续这场对话:还有要追问/回应/交代的就 true,话已说尽或没必要再说就 false",
+    )
+    utterance: str = Field(
+        default="",
+        description="continue_talking 为 true 时:你接下来要对他说/追问的话(自然中文,60字内);否则留空",
+    )
 
 
 class ObservedInteraction(BaseModel):

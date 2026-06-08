@@ -26,8 +26,10 @@ from ..models.world import WorldState
 from ..storage.repository import Repository
 
 # 单个 NPC 小动作的后果裁剪幅度(比焦点事件更克制)
-_REL_CLAMP = 8
-_STRESS_CLAMP = 8
+# PR7 去保守化:适度放宽关系/压力单步幅度,让人物关系在多日里"动得起来",
+# 而不是被钉在初值附近(每步仍受 clamp,长期仍由 RELATION_MIN/MAX 兜底)。
+_REL_CLAMP = 12
+_STRESS_CLAMP = 12
 _ATHOU_ACTION_CLAMP = 5
 
 # ---------------------------------------------------------------------------

@@ -20,7 +20,7 @@ from ..config import (
     EXPOSURE_DAILY_DECAY, EXPOSURE_PLATFORM, MAX_AUTO_ADVANCE_DAYS,
     PER_NPC_ACTION_LLM, REAL_SECONDS_PER_DAY, REFLECTION_INTERVAL_DAYS,
     RELATION_MIN, RELATION_MAX, STAGE_HYSTERESIS, TENSION_DAILY_DECAY,
-    TRUTH_PRESSURE_PLATFORM,
+    TENSION_SMOOTH_STEP, TRUTH_PRESSURE_PLATFORM,
 )
 from ..llm.client import LLMClient
 from ..models.action import NPCIntention
@@ -32,7 +32,8 @@ from ..models.world import (
 )
 from ..storage.repository import Repository
 from . import (
-    conversation_engine, event_engine, memory_engine, npc_engine, relationship_engine,
+    conflict_engine, conversation_engine, crisis_engine, event_engine,
+    memory_engine, npc_engine, relationship_engine,
 )
 
 
@@ -97,6 +98,10 @@ def advance_day(
 
     # Step 0: 先按当前数值结算阶段(让当天事件即反映真实危机阶段,如老存档曝光=100 当天就进 crisis)
     _settle_stages(repo, game_id)
+    # Step 0b(PR2):到期的离场/蛰伏状态在开局复位为 active,让其重新进入今日社交池。
+    revived = repo.expire_npc_statuses(game_id, new_day)
+    for rid in revived:
+        _p(f"  · {name_of.get(rid, rid)} 重新露面了。")
 
     # Step 1~5: 生成当日事件(三选一模式),并落地后果与记忆。
     if CONVERSATION_MODE:
@@ -186,6 +191,14 @@ def advance_day(
     # Step 8: 活变量每日演化(债务滚利息、全局紧张度自然衰减)
     _daily_world_tick(repo, game_id)
 
+    # Step 8b(PR3):推进未落槌的冲突一格(当前仅录音交易);可能在有限天数内落槌。
+    for line in conflict_engine.tick_conflicts(repo, game_id, new_day):
+        _p("  " + line)
+
+    # Step 8c(PR4):危机倒计时——曝光绷在 crisis 阶段时按连续天数触发逐级硬事件。
+    for line in crisis_engine.tick_crisis(repo, game_id, new_day):
+        _p("  " + line)
+
     # Step 9: 推进天数,并为新的一天重置玩家行动点与免费聊天额度
     repo.increment_day(game_id)
     repo.reset_player_day(game_id)
@@ -216,12 +229,22 @@ def _daily_world_tick(repo: Repository, game_id: str) -> None:
     if cur_exposure > EXPOSURE_PLATFORM:
         repo.add_exposure(game_id, -(cur_exposure - EXPOSURE_PLATFORM))
 
-    # 全局紧张度自然衰减(无新冲突时慢慢回落,避免单调饱和)
-    if world.global_tension > 0:
-        repo.set_world_value(
-            game_id, "global_tension",
-            max(RELATION_MIN, world.global_tension - TENSION_DAILY_DECAY),
-        )
+    # 全局紧张度(PR6):朝"态势目标档位"平滑靠拢(每日最多移动 TENSION_SMOOTH_STEP)。
+    # 高于目标则回落(叠加自然衰减),低于目标则升温,使其反映真实局势而非单调累积。
+    # 阶段需为最新,故在 _settle_stages 之后取 target。
+    _settle_stages(repo, game_id)
+    cur_tension = repo.get_world_state(game_id).global_tension
+    target = repo.get_world_state(game_id).tension_target()
+    if cur_tension > target:
+        step = min(TENSION_SMOOTH_STEP, cur_tension - target) + TENSION_DAILY_DECAY
+        new_tension = max(target, cur_tension - step)
+    elif cur_tension < target:
+        new_tension = min(target, cur_tension + min(TENSION_SMOOTH_STEP, target - cur_tension))
+    else:
+        new_tension = cur_tension
+    new_tension = max(RELATION_MIN, min(RELATION_MAX, new_tension))
+    if new_tension != cur_tension:
+        repo.set_world_value(game_id, "global_tension", new_tension)
 
     # 真相压力"高张力平台"(A5):超过平台则回拉,绷到平台维持张力等待玩家,不无限爆炸。
     cur_truth = repo.get_world_state(game_id).truth_pressure

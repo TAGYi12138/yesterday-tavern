@@ -62,6 +62,8 @@ MAX_MANUAL_ADVANCE_DAYS = int(os.environ.get("MAX_MANUAL_ADVANCE_DAYS", "10"))
 # ---------------------------------------------------------------------------
 # 构造对话上下文时取最近多少条短期记忆
 RECENT_MEMORY_LIMIT = 5
+# PR5:recent 记忆里"传闻(RUMOR)"最多保留几条,避免低价值传闻刷屏挤掉自身行动/对话记忆。
+RECENT_RUMOR_CAP = int(os.environ.get("RECENT_RUMOR_CAP", "2"))
 # 构造对话上下文时取多少条重要长期记忆(兼容旧逻辑/压缩用)
 LONGTERM_MEMORY_LIMIT = 3
 # 引擎 C(C2)记忆分槽:长期记忆按"槽位"组装,避免反思刷屏挤掉关键事实。
@@ -92,6 +94,16 @@ CONV_REFEREE_LLM = os.environ.get("CONV_REFEREE_LLM", "1") not in ("0", "false",
 # 社交并发度:同一轮内互不依赖的 LLM 调用(各人决策 / 各条回复+裁决)并行发起的最大线程数。
 # 全部 DB 读写仍在主线程串行完成,只把"纯网络调用"放到线程池,显著压低单日耗时。设为 1 即串行。
 CONV_CONCURRENCY = int(os.environ.get("CONV_CONCURRENCY", "5"))
+
+# --- 进阶版:多回合对话(高张力对子才你来我往,普通寒暄保持一来一回) ---
+# 一次对话里"A 说 + B 回 = 1 个回合"。普通对子(寒暄/低张力)只进行 1 个回合,
+# 高张力对子(冲突参与者 / 关系里 怀疑·怨恨·恐惧 任一较高)最多进行 TALK_MAX_TURNS_HIGH 个回合。
+# 是否继续追问由 B 回复里的 wants_to_continue + A 追问时的 continue_talking 共同决定(任一收口即止),
+# 因此实际回合数 ∈ [1, TALK_MAX_TURNS_HIGH],既解决"太单薄",又不会让所有人都啰嗦、token 飙升。
+TALK_MAX_TURNS_BASE = int(os.environ.get("TALK_MAX_TURNS_BASE", "1"))
+TALK_MAX_TURNS_HIGH = int(os.environ.get("TALK_MAX_TURNS_HIGH", "3"))
+# 关系五维里"对抗维度"(怀疑/怨恨/恐惧)达到该阈值即视为高张力对子,给更长对话预算。
+TALK_TENSION_THRESHOLD = int(os.environ.get("TALK_TENSION_THRESHOLD", "40"))
 # 关系四维 + 怀疑度的取值区间
 RELATION_MIN = 0
 RELATION_MAX = 100
@@ -131,6 +143,22 @@ EXPOSURE_DANGER = 70     # 老陈主动设法掩盖
 EXPOSURE_CRITICAL = 90   # 老陈可能栽赃/摊牌
 # 全局紧张度每日自然衰减(避免单调累积至饱和)
 TENSION_DAILY_DECAY = 2
+# PR6:global_tension 改为按态势分段计算后,每日朝目标值平滑的最大步长(防跳变)。
+TENSION_SMOOTH_STEP = int(os.environ.get("TENSION_SMOOTH_STEP", "15"))
+
+# ---------------------------------------------------------------------------
+# PR2:NPC 运行期状态(active/hiding/away)默认持续天数
+# ---------------------------------------------------------------------------
+# away(跑路/离场)默认持续天数;hiding(蛰伏/躲藏)默认持续天数。
+# 期间该 NPC 退出社交决策池,到期自动回 active。
+NPC_AWAY_DEFAULT_DAYS = int(os.environ.get("NPC_AWAY_DEFAULT_DAYS", "3"))
+NPC_HIDING_DEFAULT_DAYS = int(os.environ.get("NPC_HIDING_DEFAULT_DAYS", "2"))
+
+# ---------------------------------------------------------------------------
+# PR3:冲突状态机(P0,当前只用于录音交易 deal_recording)
+# ---------------------------------------------------------------------------
+# 录音交易在某一状态最多拖延几天:超过则强制落槌(北极星:最多 5 天必产生不可逆结果)。
+DEAL_RECORDING_MAX_STALL_DAYS = int(os.environ.get("DEAL_RECORDING_MAX_STALL_DAYS", "5"))
 
 # ---------------------------------------------------------------------------
 # 引擎 A:阈值状态机 + 衰减 + 平台(让自运行变量"会喘气、绷到高张力平台即止")

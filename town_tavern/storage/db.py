@@ -53,6 +53,8 @@ def init_db(conn: sqlite3.Connection) -> None:
             current_goal TEXT,
             stress INTEGER DEFAULT 50,
             money INTEGER DEFAULT 0,
+            status TEXT DEFAULT 'active',
+            status_until_day INTEGER DEFAULT 0,
             PRIMARY KEY (game_id, id)
         )
         """
@@ -122,6 +124,42 @@ def init_db(conn: sqlite3.Connection) -> None:
         """
     )
 
+    # 冲突(P0 状态机):一桩需要"落槌"的对峙(当前只用于录音交易 deal_recording)。
+    # participants 以 JSON 数组存 npc_id;state 为状态机当前状态;age_in_state 记录
+    # 在当前状态停留了几天;max_stall_days 为强制结算的封顶拖延天数。
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS conflicts (
+            game_id TEXT NOT NULL,
+            id TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            participants TEXT NOT NULL,
+            state TEXT NOT NULL,
+            age_in_state INTEGER DEFAULT 0,
+            max_stall_days INTEGER DEFAULT 5,
+            created_day INTEGER NOT NULL,
+            PRIMARY KEY (game_id, id)
+        )
+        """
+    )
+
+    # 冲突状态转移日志:每次进阶/落槌都留一行,回答"为什么进了这个结局"。
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS conflict_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            game_id TEXT NOT NULL,
+            conflict_id TEXT NOT NULL,
+            day INTEGER NOT NULL,
+            from_state TEXT NOT NULL,
+            to_state TEXT NOT NULL,
+            trigger_event TEXT,
+            reason TEXT,
+            consequence_summary TEXT
+        )
+        """
+    )
+
     _migrate(conn)
     conn.commit()
 
@@ -132,3 +170,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
     for col in ("first_impression", "speech_style"):
         if col not in existing:
             conn.execute(f"ALTER TABLE npcs ADD COLUMN {col} TEXT DEFAULT ''")
+    # PR2:NPC 运行期状态(active/hiding/away)+ 状态到期天
+    if "status" not in existing:
+        conn.execute("ALTER TABLE npcs ADD COLUMN status TEXT DEFAULT 'active'")
+    if "status_until_day" not in existing:
+        conn.execute("ALTER TABLE npcs ADD COLUMN status_until_day INTEGER DEFAULT 0")
