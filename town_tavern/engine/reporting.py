@@ -127,10 +127,14 @@ def build_debug_report(repo: Repository, game_id: str, day: int) -> str:
     return "\n".join(lines)
 
 
-def build_player_report(repo: Repository, game_id: str, day: int) -> str:
+def build_player_report(repo: Repository, game_id: str, day: int, llm=None) -> str:
     """玩家视角:只显示能被观察到的现象——谁没来、谁在场神态如何、明面听说的事。
 
     刻意【不含】任何系统术语:冲突状态机、flag、英文 id、私密事件一律不出现。
+
+    #5:传入 llm 时,在规则渲染之外再走一层「事件核」二次摘要——把当天零散的
+    动作拼贴压成一两句"今天到底发生了什么"的剧情核(仍只基于上面这些可观察现象,
+    绝不引入私密内情/系统术语)。llm 为空则保持纯规则渲染,完全向后兼容。
     """
     npcs = repo.get_all_npcs(game_id)
     name_of = {n.id: n.name for n in npcs}
@@ -157,7 +161,60 @@ def build_player_report(repo: Repository, game_id: str, day: int) -> str:
 
     if len(lines) == 1:
         lines.append("酒馆里一切如常,没什么特别的动静。")
+
+    # #5:可选的「事件核」二次渲染——把上面零散的可观察现象交给 LLM 压成一两句
+    # "今天到底发生了什么"的剧情核,置于明细之前。只喂可观察现象,产出仍不含系统术语。
+    if llm is not None:
+        core = _render_event_core(llm, day, lines[1:])
+        if core:
+            lines.insert(1, f"今日小结:{core}")
     return "\n".join(lines)
+
+
+def _render_event_core(llm, day: int, observable_lines: List[str]) -> str:
+    """#5:把当天【玩家可观察现象】用 LLM 二次摘要成一两句"事件核"。
+
+    只基于传入的可观察现象(已是玩家视角、无系统术语),绝不臆造看不到的内情;
+    任何异常都静默退回空串(报告退化为纯规则渲染,完全不影响主流程)。
+    """
+    body = [ln for ln in observable_lines if ln and ln.strip()]
+    # 现象平淡(只有"一切如常"兜底)时不值得多花一次 LLM。
+    if not body or body == ["酒馆里一切如常,没什么特别的动静。"]:
+        return ""
+    try:
+        system = (
+            "你是一位克制的旁白。只根据【玩家在酒馆里能亲眼看到的现象】,把今天发生的事"
+            "凝成一两句『事件核』,不超过60字,中文。"
+            "铁律:只能基于给到的可观察现象,绝不臆造看不到的内情、动机或秘密交易;"
+            "不得出现任何系统术语、英文 id、数值、flag、状态机名;不得编造新的有名字的角色。"
+        )
+        user = "今天玩家在酒馆里看到的现象如下,请压成一两句事件核:\n" + "\n".join(body)
+        return (llm.chat_text(system, user, temperature=0.4) or "").strip()
+    except Exception:
+        return ""
+
+
+def build_player_reports_for_games(
+    repo: Repository, game_ids: List[str] = None, llm=None
+) -> str:
+    """玩家视角【批量】汇总:为每局存档渲染其【当前天】的玩家可见报告。
+
+    供导出工具 / 运行汇报邮件【接玩家层】用——只输出能被观察到的现象,绝不含
+    flag/状态机/英文 id/私密事件等系统术语(与 build_player_report 同一边界)。
+    传入 llm 时,逐局再走一层「事件核」二次渲染(见 build_player_report)。
+    game_ids 留空则覆盖库里所有存档。
+    """
+    if game_ids is None:
+        game_ids = repo.list_games()
+    if not game_ids:
+        return "(暂无存档)"
+    blocks: List[str] = []
+    for gid in game_ids:
+        day = repo.get_current_day(gid)
+        blocks.append(f"〔存档 {gid}〕")
+        blocks.append(build_player_report(repo, gid, day, llm=llm))
+        blocks.append("")
+    return "\n".join(blocks).rstrip()
 
 
 # 主导维度 → 玩家可感知的"神态"措辞(不带任何数值/系统词)。

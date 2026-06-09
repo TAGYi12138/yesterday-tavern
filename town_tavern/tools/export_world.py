@@ -209,6 +209,26 @@ def build_report(data: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def build_player_view(db_path: str) -> str:
+    """玩家视角导出(#1):走业务层 build_player_report,只给"能被观察到的现象"。
+
+    与 build_report 的开发者全量转储互补——后者摊开 flag/状态机(给开发者看),
+    这里【接玩家层】,绝不出现系统术语,所见即玩家进游戏会看到的样子。
+    单独开一条 Repository 连接(只读取,不改世界);无存档时返回提示。
+    """
+    # 延迟到此处再 import 业务层,保持 dump 主流程"只读底层 SQLite"的轻依赖。
+    from ..engine.reporting import build_player_reports_for_games
+    from ..storage.db import get_connection
+    from ..storage.repository import Repository
+
+    conn = get_connection(Path(db_path))
+    try:
+        repo = Repository(conn)
+        return build_player_reports_for_games(repo)
+    finally:
+        conn.close()
+
+
 def main(argv: List[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="导出游戏世界全部信息")
     parser.add_argument("--db", default=_default_db_path(), help="SQLite 库路径")
@@ -230,16 +250,25 @@ def main(argv: List[str] | None = None) -> int:
     report = build_report(data)
     print(report)
 
+    # #1:玩家视角导出——接业务层玩家渲染器(只给可观察现象,不含开发者术语)。
+    player_report = build_player_view(db_path)
+    print("\n" + "=" * 72)
+    print("# 玩家视角(你进游戏会看到的样子,不含任何系统术语)\n")
+    print(player_report)
+
     if not args.no_files:
         out_dir = Path(args.out) if args.out else (Path(db_path).resolve().parent / "exports")
         out_dir.mkdir(parents=True, exist_ok=True)
         ts = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
         json_path = out_dir / f"world_full_{ts}.json"
         md_path = out_dir / f"world_report_{ts}.md"
+        player_path = out_dir / f"world_player_{ts}.md"
         json_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
         md_path.write_text(report, encoding="utf-8")
+        player_path.write_text(player_report, encoding="utf-8")
         print(f"\n[已写出] 全量 JSON: {json_path}")
-        print(f"[已写出] 人话报告: {md_path}")
+        print(f"[已写出] 开发者报告: {md_path}")
+        print(f"[已写出] 玩家视角报告: {player_path}")
 
     return 0
 

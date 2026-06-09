@@ -7,7 +7,9 @@
 压缩用 LLM 总结;若 LLM 不可用则退化为简单拼接,保证主流程不被阻塞。
 """
 import logging
-from typing import List, Optional
+from typing import List, Optional, Tuple
+
+from pydantic import BaseModel, Field
 
 from ..config import LONGTERM_MEMORY_LIMIT, MEMORY_COMPRESS_THRESHOLD
 from ..models.memory import (
@@ -16,6 +18,16 @@ from ..models.memory import (
 from ..storage.repository import Repository
 
 logger = logging.getLogger(__name__)
+
+
+class MemoryInterpretation(BaseModel):
+    """#2:压缩记忆时,在【观察事实】之上让角色给出一句【个人推测】+【把握度】。
+
+    observed 由 _summarize 单独产出(确定看到/被告知的事);这里只补"推测层"。
+    """
+
+    interpretation: str = Field(default="", description="个人推测/解读(可空);务必是猜测语气,不得当事实")
+    confidence: int = Field(default=50, description="对该推测的把握度 0-100")
 
 # 空/废记忆过滤:杜绝形如 "[记忆梳理]"(压缩 LLM 吐空时产生)的空壳进入长期记忆,
 # 污染 NPC 次日决策。阈值按"去掉模板前缀/冒号后的纯内容长度"衡量,取小值只杀真正
@@ -129,14 +141,19 @@ def compress_memories_if_needed(
         return False
 
     summary = normalize_memory_content(_summarize(to_compress, llm))
-    content = normalize_memory_content(f"[记忆梳理] {summary}")
+    observed = normalize_memory_content(f"[记忆梳理] {summary}")
     # LLM 吐空/无效时,绝不写入空壳长期记忆,也【不删除】原始记忆(留待下次再压),
-    # 避免既丢数据又留垃圾。
-    if not is_valid_memory_content(content):
+    # 避免既丢数据又留垃圾。先用 observed 判定有效性(沿用既有阈值)。
+    if not is_valid_memory_content(observed):
         logger.warning(
             "压缩产出空/无效,跳过本次压缩(保留原始记忆): npc=%s day=%s", npc_id, day,
         )
         return False
+    # #2:在 observed(确定的事)之上补一层【推测 + 把握度】,把记忆真正拆成
+    # observed/interpretation/confidence 落库。推测层失败/无 LLM 时退回纯 observed,
+    # 此时 make_memory_content 产出与旧版完全一致的纯文本(向后兼容,零回归)。
+    interpretation, confidence = _interpret(summary, to_compress, llm)
+    content = make_memory_content(observed, interpretation, confidence)
     # 写入压缩后的长期记忆
     repo.add_memory(
         game_id,
@@ -187,3 +204,43 @@ def _summarize(memories: List[Memory], llm) -> str:
         return llm.chat_text(system, user, temperature=0.3)
     except Exception:
         return joined[:120]
+
+
+def _interpret(
+    observed: str, memories: List[Memory], llm
+) -> Tuple[str, Optional[int]]:
+    """#2:在 observed(确定的事)之上,产出该角色的一句【个人推测】+【把握度】。
+
+    严守知识隔离与"非上帝视角":推测必须是猜测语气、只能基于角色亲历/被告知的内容,
+    绝不写入其不可能知道的秘密。无 LLM / 不支持 chat_json / 失败 / 推测为空时,
+    一律返回 ("", None) —— 调用方据此退回纯 observed,与旧版完全一致(零回归)。
+    """
+    if llm is None or not (observed or "").strip():
+        return "", None
+    if not hasattr(llm, "chat_json"):
+        return "", None
+    # 推测只读各条【观察事实】,不把旧推测层层放大成事实。
+    joined = "；".join(parse_memory_content(m.content)["observed"] for m in memories)
+    try:
+        system = (
+            "你扮演一个角色,在已经确定的见闻之上,补一句你【个人的推测】并给出把握度。"
+            "铁律:只能基于该角色亲眼看到/亲耳听到/亲自参与/别人明确告诉他的内容来推测;"
+            "严禁上帝视角,绝不写入他不可能知道的秘密或交易内情;"
+            "推测必须是猜测语气(如『我怀疑/可能/看起来』);"
+            "若实在没有可言之有据的推测,interpretation 留空。"
+            "confidence 是你对该推测的把握度(0-100):越没把握给越低。"
+        )
+        user = (
+            f"这是你已经确定的见闻:{observed}\n"
+            f"(原始记忆参考:{joined})\n"
+            "请只补充一句你的个人推测与把握度。"
+        )
+        result = llm.chat_json(system, user, schema=MemoryInterpretation, temperature=0.3)
+        interp = (result.interpretation or "").strip()
+        if not interp:
+            return "", None
+        conf = int(result.confidence)
+        conf = max(0, min(100, conf))
+        return interp, conf
+    except Exception:
+        return "", None

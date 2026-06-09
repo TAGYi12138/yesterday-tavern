@@ -25,6 +25,7 @@ from .config import (
     REAL_SECONDS_PER_DAY,
 )
 from .engine import world_engine
+from .engine.reporting import build_player_reports_for_games
 from .llm.client import LLMClient, LLMError
 from .models.event import Event
 from .notify.email_reporter import RunReporter, email_configured
@@ -56,8 +57,18 @@ def _interruptible_sleep(seconds: int) -> None:
 
 
 def _world_snapshot(repo: Repository) -> str:
-    """汇总所有存档的世界 + NPC 当前状态,作为邮件里的"现状快照"。"""
+    """汇总所有存档的世界 + NPC 当前状态,作为邮件里的"现状快照"。
+
+    #1:在开发者数值快照之上,先附一段【玩家视角】(接 build_player_report 玩家层),
+    让汇报邮件也能看到"玩家进游戏会看到的样子",而不再只有 flag/数值的开发者视图。
+    """
     lines = []
+    player_view = build_player_reports_for_games(repo)
+    if player_view and player_view != "(暂无存档)":
+        lines.append("【玩家视角 · 你进酒馆会看到的样子】")
+        lines.append(player_view)
+        lines.append("")
+        lines.append("【开发者数值快照(仅供你自查,玩家看不到)】")
     for gid in repo.list_games():
         world = repo.get_world_state(gid)
         lines.append(f"〔存档 {gid}〕{world.summary_text()}")

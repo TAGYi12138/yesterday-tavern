@@ -93,6 +93,9 @@ class WorldState(BaseModel):
     # PR4(保留兼容):危机连续天数。语义 = exposure_stage_days if stage==crisis else 0,
     # 由 update_exposure_stage 派生维护,杜绝"suppressing 阶段却 crisis_days>0"的语义错位。
     crisis_days: int = Field(default=0, description="连续处于曝光危机阶段的天数(派生兼容字段)")
+    # #4:危机生命周期阶段机——none(无危机)→ active(危机中,逐级硬事件)→
+    # cooling(烧到顶后降温,主动压低曝光)→ aftermath(余波宽限,不再强触发硬事件)→ none。
+    crisis_phase: str = Field(default="none", description="危机生命周期阶段:none/active/cooling/aftermath")
 
     def tension_target(self) -> int:
         """PR6:按当前三条态势【阶段】算出全局紧张度的"目标档位"(0-100)。
@@ -156,14 +159,21 @@ class WorldState(BaseModel):
         注意:这只推动【局势】(防守/施压),绝不揭示阿土真相——真相仍归玩家。
         """
         lines: List[str] = []
-        # 曝光阶段 → 老陈(police)的防守姿态逐级升级
-        exposure_map = {
-            "watching": "老陈已起疑,会暗中监视、试探、敲打可能知情的人,但尚未撕破脸。",
-            "suppressing": "老陈感到威胁,会主动压制证人、核查可疑者底细、威胁相关人闭嘴或封店。",
-            "crisis": "老陈濒临败露,会不择手段灭口软肋、施压知情者、甚至准备栽赃或摊牌(但不会主动交代阿土的真相)。",
-        }
-        if self.exposure_stage in exposure_map:
-            lines.append("【局势·老陈】" + exposure_map[self.exposure_stage])
+        # #4:危机降温/余波期——局势已过顶峰,老陈收敛锋芒;此时【覆盖】曝光阶段施压口径,
+        # 但债务/真相暗流仍各自照常(它们与危机生命周期相互独立)。
+        if self.crisis_phase == "cooling":
+            lines.append("【局势·老陈】风声烧到顶后开始收敛,老陈暂收锋芒、不再主动出击,转为观望舔伤。")
+        elif self.crisis_phase == "aftermath":
+            lines.append("【局势·老陈】风波刚过、余波未平,老陈按兵不动避风头,众人惊魂未定、暂得喘息。")
+        else:
+            # 曝光阶段 → 老陈(police)的防守姿态逐级升级
+            exposure_map = {
+                "watching": "老陈已起疑,会暗中监视、试探、敲打可能知情的人,但尚未撕破脸。",
+                "suppressing": "老陈感到威胁,会主动压制证人、核查可疑者底细、威胁相关人闭嘴或封店。",
+                "crisis": "老陈濒临败露,会不择手段灭口软肋、施压知情者、甚至准备栽赃或摊牌(但不会主动交代阿土的真相)。",
+            }
+            if self.exposure_stage in exposure_map:
+                lines.append("【局势·老陈】" + exposure_map[self.exposure_stage])
         # 债务阶段 → 阿财(boss)/相关人的反应逐级升级
         debt_map = {
             "pressing": "债务催得紧,阿财开始翻账本、四处周转,情绪焦躁。",

@@ -139,9 +139,10 @@ _PACE_PRESETS = {
     # conflict_min_days:冲突自创建起至少拖几天才允许"落槌"(防止世界爆太快;危机截断可越过它)。
     # conflict_max_days:单状态最多拖几天,超过强制落槌(北极星上限)。
     # crisis_escalation_interval:危机硬事件逐级升级的间隔天数。
-    "debug_fast":  {"conflict_min_days": 0, "conflict_max_days": 5, "crisis_escalation_interval": 1, "debt_interest_per_day": 5000, "exposure_decay_per_day": 3},
-    "demo_normal": {"conflict_min_days": 3, "conflict_max_days": 5, "crisis_escalation_interval": 2, "debt_interest_per_day": 8000, "exposure_decay_per_day": 3},
-    "slow_burn":   {"conflict_min_days": 5, "conflict_max_days": 8, "crisis_escalation_interval": 3, "debt_interest_per_day": 3000, "exposure_decay_per_day": 5},
+    # crisis_aftermath_days:危机烧到顶并降温后,进入"余波期"的宽限天数,期间不再强触发硬事件。
+    "debug_fast":  {"conflict_min_days": 0, "conflict_max_days": 5, "crisis_escalation_interval": 1, "debt_interest_per_day": 5000, "exposure_decay_per_day": 3, "crisis_aftermath_days": 2},
+    "demo_normal": {"conflict_min_days": 3, "conflict_max_days": 5, "crisis_escalation_interval": 2, "debt_interest_per_day": 8000, "exposure_decay_per_day": 3, "crisis_aftermath_days": 3},
+    "slow_burn":   {"conflict_min_days": 5, "conflict_max_days": 8, "crisis_escalation_interval": 3, "debt_interest_per_day": 3000, "exposure_decay_per_day": 5, "crisis_aftermath_days": 4},
 }
 _PACE = _PACE_PRESETS.get(GAME_PACE, _PACE_PRESETS["debug_fast"])
 
@@ -157,6 +158,10 @@ CONFLICT_MIN_DAYS = max(0, _paced_int("CONFLICT_MIN_DAYS", "conflict_min_days"))
 CONFLICT_MAX_DAYS = max(1, _paced_int("CONFLICT_MAX_DAYS", "conflict_max_days"))
 # 危机逐级硬事件的升级间隔(天)。debug_fast=1 即逐天升级(历史行为)。
 CRISIS_ESCALATION_INTERVAL = max(1, _paced_int("CRISIS_ESCALATION_INTERVAL", "crisis_escalation_interval"))
+# #4:危机烧到顶后进入"降温→余波"的宽限天数;余波期内不再强触发硬事件,让局势喘口气。
+CRISIS_AFTERMATH_DAYS = max(1, _paced_int("CRISIS_AFTERMATH_DAYS", "crisis_aftermath_days"))
+# #4:降温阶段每天主动压低的曝光风险点数(足以把曝光带出 crisis 区间,触发退阶)。
+CRISIS_COOLING_EXPOSURE_DROP = int(os.environ.get("CRISIS_COOLING_EXPOSURE_DROP", "30"))
 
 # ---------------------------------------------------------------------------
 # 活变量:债务 / 曝光 / 紧张度(每天自动演化,并被行为联动)
