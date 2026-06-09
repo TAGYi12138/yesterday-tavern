@@ -5,6 +5,7 @@ from town_tavern.engine.memory_engine import write_memory
 from town_tavern.engine.reporting import (
     _DEV_TERMS, aggregate_relationship_changes, build_debug_report,
     build_npc_private_report, build_player_report,
+    build_player_reports_for_games,
 )
 from town_tavern.models.event import (
     Event, EventConsequences, EventType, RelationshipDelta,
@@ -115,3 +116,71 @@ def test_player_report_relationship_feel_has_no_numbers(game):
         assert ch not in feel, f"体感描述泄露了数值: {feel}"
     for term in _DEV_TERMS:
         assert term not in report
+
+
+# ---- #1 导出/邮件接玩家层:批量玩家视角汇总,绝不泄露开发者术语 ----
+def test_player_reports_for_games_is_player_view_only(game):
+    repo, gid = game
+    _seed_resolved_recording(repo, gid, day=4)
+    repo.set_world_value(gid, "current_day", 4)
+    repo.add_event(gid, Event(
+        day=4, type=EventType.DAILY_LIFE, title="酒馆日常",
+        summary="小林坐在角落，捏着半张皱掉的纸。", actors=["reporter"], visibility="public",
+    ))
+    out = build_player_reports_for_games(repo)
+    assert f"〔存档 {gid}〕" in out
+    assert "小林坐在角落" in out
+    # 即便库里有已落槌冲突/flag,玩家视角汇总也绝不出现开发者术语
+    for term in _DEV_TERMS:
+        assert term not in out, f"玩家视角导出泄露了开发者术语: {term}"
+
+
+def test_player_reports_for_games_empty_db(repo):
+    assert build_player_reports_for_games(repo) == "(暂无存档)"
+
+
+# ---- #5 事件核二次渲染:传入 llm 时把可观察现象压成一句"今日小结" ----
+class _CoreLLM:
+    """只实现 chat_text 的假 LLM,返回固定事件核。"""
+
+    def __init__(self, core: str):
+        self.core = core
+        self.calls = 0
+
+    def chat_text(self, system, user, temperature: float = 0.4) -> str:
+        self.calls += 1
+        return self.core
+
+
+def test_event_core_second_pass_adds_summary(game):
+    repo, gid = game
+    repo.add_event(gid, Event(
+        day=4, type=EventType.DAILY_LIFE, title="角落",
+        summary="小林和淑芬在角落低声交谈。", actors=["reporter", "sister"], visibility="public",
+    ))
+    llm = _CoreLLM("今天小林和淑芬之间像是达成了某种默契。")
+    report = build_player_report(repo, gid, 4, llm=llm)
+    assert llm.calls == 1
+    assert "今日小结:今天小林和淑芬之间像是达成了某种默契。" in report
+    # 二次渲染产出仍不得带系统术语
+    for term in _DEV_TERMS:
+        assert term not in report
+
+
+def test_event_core_skipped_when_nothing_happens(game):
+    repo, gid = game
+    llm = _CoreLLM("不该被调用")
+    report = build_player_report(repo, gid, 7, llm=llm)
+    # 平淡日("一切如常")不浪费一次 LLM,也不加"今日小结"
+    assert llm.calls == 0
+    assert "今日小结" not in report
+
+
+def test_event_core_absent_without_llm(game):
+    repo, gid = game
+    repo.add_event(gid, Event(
+        day=4, type=EventType.DAILY_LIFE, title="角落",
+        summary="小林坐在角落。", actors=["reporter"], visibility="public",
+    ))
+    report = build_player_report(repo, gid, 4)
+    assert "今日小结" not in report

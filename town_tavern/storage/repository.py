@@ -674,6 +674,7 @@ class Repository:
             truth_stage=_str("truth_stage", "latent"),
             exposure_stage_days=_int("exposure_stage_days", 0),
             crisis_days=_int("crisis_days", 0),
+            crisis_phase=_str("crisis_phase", "none"),
         )
 
     def add_boss_debt(self, game_id: str, delta: int) -> int:

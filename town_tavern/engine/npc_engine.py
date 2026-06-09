@@ -4,7 +4,7 @@ from typing import Optional, Tuple
 from ..llm import prompts
 from ..llm.client import LLMClient
 from ..models.action import DialogueResult, NPCIntention, ReflectionResult
-from ..models.memory import MemoryType
+from ..models.memory import MemoryType, make_memory_content
 from ..models.npc import NPC
 from ..storage.repository import Repository
 from . import memory_engine, relationship_engine
@@ -217,11 +217,22 @@ def reflect(
     result = llm.chat_json(system, user, ReflectionResult)
     result.npc_id = npc_id  # 强制对齐
 
-    # 反思总结写入长期记忆(高重要度)
-    if result.summary:
+    # 反思写入长期记忆(高重要度)。#2:按 observed/interpretation/confidence 三层落库——
+    # observed=确凿经历的事,interpretation=本人解读(summary),confidence=把握度。
+    # 模型未给 observed 时退回旧写法 `[反思] {summary}`(纯文本,向后兼容)。
+    if result.summary or result.observed:
+        observed = (result.observed or "").strip()
+        if observed:
+            content = make_memory_content(
+                f"[反思] {observed}",
+                interpretation=result.summary or "",
+                confidence=result.confidence,
+            )
+        else:
+            content = f"[反思] {result.summary}"
         memory_engine.write_memory(
             repo, game_id, npc_id, day,
-            content=f"[反思] {result.summary}",
+            content=content,
             mtype=MemoryType.REFLECTION, importance=82,
             emotional_tag=result.mood or None,
         )

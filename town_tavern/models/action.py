@@ -32,10 +32,17 @@ class PlayerAction(BaseModel):
 
 
 class ReflectionResult(BaseModel):
-    """NPC 反思的结构化输出:对自身处境的总结 + 可能更新的目标与心境。"""
+    """NPC 反思的结构化输出:对自身处境的总结 + 可能更新的目标与心境。
+
+    #2:反思记忆也按 observed/interpretation/confidence 三层落库——observed 记"确凿
+    经历的事"、summary 作为"个人解读(推测层)"、confidence 标注把握度。三者均有默认
+    值,旧调用(只给 summary)仍可用,此时退回纯文本写法(向后兼容)。
+    """
 
     npc_id: str
-    summary: str = Field(..., description="对自己当前处境的内心总结(将写入长期记忆)")
+    summary: str = Field(..., description="对自己当前处境的内心总结/解读(推测层,将写入长期记忆)")
+    observed: str = Field(default="", description="这段时间你确凿经历/被告知的事(事实层,非推测)")
+    confidence: int = Field(default=60, description="对上面解读的把握度 0-100")
     updated_goal: str = Field(default="", description="新的当前目标;留空则不改变")
     mood: str = Field(default="", description="当前心境标签,如 焦虑/孤注一掷/麻木")
 

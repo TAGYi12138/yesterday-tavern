@@ -203,6 +203,11 @@ def advance_day(
     for line in crisis_engine.tick_crisis(repo, game_id, new_day):
         _p("  " + line)
 
+    # Step 8d(#4):危机生命周期阶段机——烧到顶后降温、留余波,不再一直在 crisis 烧。
+    # 必须在 tick_crisis 之后,使升级到顶(L4)的同一天起步,次日进入降温。
+    for line in crisis_engine.tick_crisis_phase(repo, game_id, new_day):
+        _p("  " + line)
+
     # Step 9: 推进天数,并为新的一天重置玩家行动点与免费聊天额度
     repo.increment_day(game_id)
     repo.reset_player_day(game_id)

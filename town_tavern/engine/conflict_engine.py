@@ -50,6 +50,70 @@ _LEDGER_TRIGGER_BOSS_STRESS = 75
 
 
 # ---------------------------------------------------------------------------
+# #3:冲突落槌后【强制重写参与者目标】(硬约束),根治"结算后目标回流"。
+# ---------------------------------------------------------------------------
+# 软提示(STATE_SENTENCE 注入 prompt)挡不住 LLM 复读旧交易——current_goal 是
+# 持久字段,落槌时若不改写,NPC 第二天仍会照着旧目标(如"卖旧录音跑路")行动。
+# 这里在终态【确定性】地把相关角色目标改写成"只能围绕残局/二级线索/补救",
+# 从源头杜绝回流。按 (终态 → {npc_id: 新目标}) 映射,只改该冲突的真正参与者。
+_RESOLUTION_GOALS: dict[ConflictState, dict[str, str]] = {
+    # --- 录音交易 ---
+    ConflictState.RESOLVED_SUCCESS: {
+        _HOLDER: "录音已脱手、钱已到手,如今只想拿钱避风头、撇清干系,绝不再提那盘带子、更不再找人兜售它。",
+        _BUYER: "录音已到手,接下来只想着核实内容、保护线人、谋划怎么用,不再纠缠那桩交易本身。",
+    },
+    ConflictState.RESOLVED_BETRAYAL: {
+        _HOLDER: "交易黄了、人也得远遁避祸,只想躲过这阵风声,绝不回头再碰这桩买卖。",
+        _BUYER: "被反水坑了一道,转而另寻突破口、设法追回损失,绝不再信旧渠道、不再谈那盘录音。",
+    },
+    ConflictState.RESOLVED_INTERRUPTED: {
+        _HOLDER: "录音当场被老陈截下,如今只能蛰伏避风头、从残局里找回点筹码,绝不再假装那盘带子还在自己手里能卖。",
+        _BUYER: "交接被截、录音被扣,只能另找二级线索接着查,不再围着那盘已经没了的录音打转。",
+    },
+    ConflictState.RESOLVED_EVIDENCE_COMPROMISED: {
+        _HOLDER: "主证已损毁作废,只能认栽避风头,不再围着那盘没用的录音兜售。",
+        _BUYER: "录音作废,改从其他人、二手线索上找补,不再纠结那桩已经黄掉的交易。",
+    },
+    # --- 账本摊牌 ---
+    ConflictState.RESOLVED_TRUST: {
+        _BOSS: "账本的事已和妹妹摊开,转而和她一起想办法应对债务,不再瞒她、不再独自硬扛。",
+        _SISTER: "哥哥已经坦白账本,转而和他一起面对欠债,不再独自查账试探。",
+    },
+    ConflictState.RESOLVED_BREAKDOWN: {
+        _BOSS: "和妹妹闹崩了,只能各自硬扛,先顾着自保、想法子填债窟窿。",
+        _SISTER: "和哥哥闹崩、心也冷了,转向自保与自己的打算,不再指望这个家。",
+    },
+    ConflictState.RESOLVED_COVERUP: {
+        _BOSS: "账本暂时糊弄过去、瞒住了妹妹,接下来只想着设法填账、别再露馅。",
+        _SISTER: "账本的事被哥哥搪塞了过去,我暂且作罢,但心里存着疑,留意往后的破绽。",
+    },
+}
+
+
+def rewrite_goals_on_resolution(
+    repo: Repository, game_id: str, conflict: Conflict, resolved_state: ConflictState
+) -> List[str]:
+    """#3:冲突落槌时,把【该冲突参与者】的 current_goal 硬改写为终态后的新目标。
+
+    只改这桩冲突真正的参与者(知识隔离,不殃及旁人),且只在有映射的终态执行。
+    返回被改写的可读说明行(供日志/摘要),无改写则返回空列表。
+    """
+    goals = _RESOLUTION_GOALS.get(resolved_state)
+    if not goals:
+        return []
+    lines: List[str] = []
+    for npc_id in conflict.participants:
+        new_goal = goals.get(npc_id)
+        if not new_goal:
+            continue
+        repo.update_npc_goal(game_id, npc_id, new_goal)
+        npc = repo.get_npc(game_id, npc_id)
+        name = npc.name if npc else npc_id
+        lines.append(f"{name}的目标已随结算改写")
+    return lines
+
+
+# ---------------------------------------------------------------------------
 # 结局后果工厂(全部走统一契约;红线在 apply_consequence 内再兜一层)
 # ---------------------------------------------------------------------------
 def _resolution_consequence(state: ConflictState) -> Tuple[Consequence, str]:
@@ -248,6 +312,8 @@ def force_resolve_deal_recording(
     conflict.state = forced
     conflict.age_in_state = 0
     repo.upsert_conflict(game_id, conflict)
+    # #3:落槌即硬改写参与者目标,杜绝次日仍复读旧交易。
+    rewrite_goals_on_resolution(repo, game_id, conflict, forced)
     repo.add_conflict_log(
         game_id, DEAL_RECORDING, day, from_state.value, forced.value,
         trigger_event="危机强制结算", reason=reason,
@@ -524,6 +590,9 @@ def tick_conflicts(repo: Repository, game_id: str, day: int) -> List[str]:
             conflict.state = new_state
             conflict.age_in_state = 0
             repo.upsert_conflict(game_id, conflict)
+            # #3:一旦落槌(进入终态),硬改写参与者目标,从源头杜绝结算后目标回流。
+            if is_resolved(new_state):
+                rewrite_goals_on_resolution(repo, game_id, conflict, new_state)
             repo.add_conflict_log(
                 game_id, conflict.id, day, from_state.value, new_state.value,
                 trigger_event="每日推进", reason=reason,
