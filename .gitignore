@@ -16,3 +16,7 @@ __pycache__/
 # 虚拟环境
 .venv/
 venv/
+
+# 本地导出数据和工具
+exports/
+town_tavern/tools/

@@ -19,7 +19,7 @@ services:
     environment:
       - TOWN_TAVERN_DB=/data/town_tavern.db
       # 节奏:现实 1800 秒(30 分钟)= 游戏 1 天,给足生成与阅读/操作的时间。
-      - REAL_SECONDS_PER_DAY=1800
+      - REAL_SECONDS_PER_DAY=1200
       # 守护进程每 60 秒检查一次是否到点该推进(不足 1 天则零成本空转)。
       - DAEMON_TICK_SECONDS=60
     volumes:
