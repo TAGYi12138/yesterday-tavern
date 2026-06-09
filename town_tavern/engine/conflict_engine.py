@@ -398,30 +398,65 @@ def _detect_ledger_progress_signal(repo: Repository, game_id: str, day: int) -> 
 
 
 def describe_conflicts_for_npc(repo: Repository, game_id: str, npc_id: str) -> str:
-    """#2:为某 NPC 汇总【它本人参与的】冲突当前状态(含已结算),用于注入决策上下文。
+    """#6:按角色分层地为某 NPC 汇总冲突上下文,用于注入决策。
 
-    严守知识隔离:只列出 npc_id 是参与者的冲突;旁观者不会自动得知别人冲突的结算细节。
-    返回多行文本(无相关冲突则返回空串)。已落槌的冲突给出"别再当没发生"的人话提示,
-    正是为了防止结算后 NPC 第二天还接着谈旧交易。
+    - 参与者视角:本人卷入的冲突给出【完整状态】(含已结算),据此说话,别谈作废旧情节。
+    - 旁观者视角:本人未参与的冲突【只给可观察到的模糊提示】(谁最近不露面、谁像在等人),
+      绝不泄露冲突状态机/交易细节/结算结果——严守知识隔离,只凭"在场/缺席"这类明面现象。
+
+    返回多行文本(无任何相关信息则返回空串)。
     """
-    name_of = {n.id: n.name for n in repo.get_all_npcs(game_id)}
-    lines: List[str] = []
+    npcs = repo.get_all_npcs(game_id)
+    name_of = {n.id: n.name for n in npcs}
+    present_of = {n.id: n.is_present() for n in npcs}
+
+    own_lines: List[str] = []
+    bystander_lines: List[str] = []
     for conflict in repo.get_all_conflicts(game_id):
-        if npc_id not in conflict.participants:
-            continue
-        sentence = state_sentence(conflict.state)
-        if not sentence:
-            continue
         label = "录音交易" if conflict.kind == DEAL_RECORDING else "账本摊牌"
-        status = "已了结" if conflict.is_resolved() else "进行中"
-        others = "、".join(
-            name_of.get(p, p) for p in conflict.participants if p != npc_id
+        if npc_id in conflict.participants:
+            sentence = state_sentence(conflict.state)
+            if not sentence:
+                continue
+            status = "已了结" if conflict.is_resolved() else "进行中"
+            others = "、".join(
+                name_of.get(p, p) for p in conflict.participants if p != npc_id
+            )
+            who = f"(与{others})" if others else ""
+            own_lines.append(f"- 【{label}·{status}】{who} {sentence}")
+        else:
+            hint = _bystander_conflict_hint(conflict, name_of, present_of)
+            if hint:
+                bystander_lines.append("- " + hint)
+
+    blocks: List[str] = []
+    if own_lines:
+        blocks.append(
+            "你正卷入的事(请据此说话,别谈已经了结/作废的旧情节):\n" + "\n".join(own_lines)
         )
-        who = f"(与{others})" if others else ""
-        lines.append(f"- 【{label}·{status}】{who} {sentence}")
-    if not lines:
+    if bystander_lines:
+        blocks.append(
+            "你旁观到的零星动静(只是表象,你并不知道内情,别替别人把话说死):\n"
+            + "\n".join(bystander_lines)
+        )
+    return "\n".join(blocks)
+
+
+def _bystander_conflict_hint(conflict, name_of: dict, present_of: dict) -> str:
+    """旁观者只能看到的模糊提示:依据参与者"在场/缺席"这类明面现象,不含任何冲突内情。
+
+    例:某参与者蛰伏/离场而另一参与者还在场 → "阿龙最近不太露面,小林像是一直在等谁"。
+    无可观察到的反差则不提(返回空串),避免凭空生成旁观信息。
+    """
+    absent = [name_of.get(p, p) for p in conflict.participants if not present_of.get(p, True)]
+    present = [name_of.get(p, p) for p in conflict.participants if present_of.get(p, True)]
+    if not absent:
         return ""
-    return "你正卷入的事(请据此说话,别谈已经了结/作废的旧情节):\n" + "\n".join(lines)
+    who_gone = "、".join(absent)
+    if present:
+        who_wait = "、".join(present)
+        return f"{who_gone}最近不太露面,{who_wait}像是一直在等谁。"
+    return f"{who_gone}最近不太露面。"
 
 
 def _detect_progress_signal(repo: Repository, game_id: str, day: int) -> bool:

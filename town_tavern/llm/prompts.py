@@ -406,8 +406,16 @@ def build_turn_decision_prompt(
     directive_block = f"【当前局势压力(请据此调整你的行动姿态)】\n{directive}\n\n" if directive else ""
     # PR5:只属于"你自己"的昨日个人摘要(知识隔离),帮助今天的行动接得上昨天。
     yesterday_block = f"【你昨天自己做/经历的事(只有你知道)】\n{personal_yesterday}\n\n" if personal_yesterday else ""
-    # #2:你本人卷入的冲突当前状态(含已结算),防止你接着谈一桩已经了结/作废的旧事。
-    conflict_block = f"【{conflict_brief}】\n\n" if conflict_brief else ""
+    # #6:冲突上下文(参与者全量 + 旁观者模糊提示),并附"你必须遵守这些状态"的硬约束,
+    # 防止落槌后第二天还谈旧交易、或当面去找已经躲起来的人。
+    conflict_block = (
+        f"【你当前感知到的局面】\n{conflict_brief}\n"
+        "你必须遵守这些状态:\n"
+        "- 如果某人最近不露面(已躲起来/离场),不要假设他在场、更不要当面找他说话。\n"
+        "- 如果一桩交易/对峙已经了结或作废,不要再当它没发生、重复发起同一桩旧事。\n"
+        "- 如果证据已被扣下或损毁,不要假装它还安然在手。\n"
+        "- 对你只是旁观到的事,只能依据表象去猜,不要说得像你知道内情。\n\n"
+    ) if conflict_brief else ""
     user = (
         f"【场景】此刻你在『昨日酒馆』店内(镇上唯一的酒馆,你们都在这儿)。\n"
         f"【当前状态】压力:{npc.stress}/100,当前目标:{npc.current_goal}\n"
