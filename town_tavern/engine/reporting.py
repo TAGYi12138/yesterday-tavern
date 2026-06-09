@@ -15,6 +15,7 @@
 from typing import Any, Dict, List
 
 from ..models.conflict import state_sentence
+from ..models.memory import render_memory_for_npc
 from ..storage.repository import Repository
 from .conversation_engine import _humanize_ids
 
@@ -210,7 +211,7 @@ def build_npc_private_report(repo: Repository, game_id: str, npc_id: str, day: i
     if mems:
         lines.append("-- 我今天记住的 --")
         for m in mems:
-            lines.append(f"  · {m.content}")
+            lines.append(f"  · {render_memory_for_npc(m.content)}")
 
     # 只列该 NPC 本人参与的冲突(知识隔离),给一句人话状态。
     own = [c for c in repo.get_all_conflicts(game_id) if npc_id in c.participants]

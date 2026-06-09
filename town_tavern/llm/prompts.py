@@ -5,7 +5,7 @@
 from typing import List, Optional
 
 from ..models.event import EventType
-from ..models.memory import Memory
+from ..models.memory import Memory, parse_memory_content
 from ..models.npc import NPC
 from ..models.relationship import Relationship
 from ..models.world import WorldState
@@ -24,16 +24,29 @@ GUARDRAIL = (
 
 
 def _memories_text(recent: List[Memory], longterm: List[Memory]) -> str:
-    """把记忆列表渲染成文本块。"""
-    lines = []
-    if longterm:
-        lines.append("【你的长期重要记忆】")
-        for m in longterm:
-            lines.append(f"- (第{m.day}天) {m.content}")
-    if recent:
-        lines.append("【你最近的记忆】")
-        for m in recent:
-            lines.append(f"- (第{m.day}天) {m.content}")
+    """把记忆列表渲染成文本块。
+
+    #5:把【我确定知道的事(观察事实)】与【我的推测】分开呈现,推测带可信度。
+    纯字符串记忆(无推测)只进"确定知道的事";让 NPC 带着可能的误判去行动,更像真人。
+    """
+    facts: List[str] = []        # (来源, 天, 观察事实)
+    guesses: List[str] = []      # (天, 推测 + 可信度)
+    for label, mems in (("长期", longterm), ("最近", recent)):
+        for m in mems:
+            p = parse_memory_content(m.content)
+            if p["observed"]:
+                facts.append(f"- (第{m.day}天·{label}) {p['observed']}")
+            if p["interpretation"]:
+                conf = f"(可信度 {p['confidence']})" if p["confidence"] is not None else ""
+                guesses.append(f"- (第{m.day}天) {p['interpretation']}{conf}")
+
+    lines: List[str] = []
+    if facts:
+        lines.append("【我确定知道的事】")
+        lines.extend(facts)
+    if guesses:
+        lines.append("【我的推测(可能有误,别当成事实)】")
+        lines.extend(guesses)
     if not lines:
         lines.append("(暂无特别记忆)")
     return "\n".join(lines)
