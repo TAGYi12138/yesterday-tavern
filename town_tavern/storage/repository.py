@@ -398,6 +398,19 @@ class Repository:
         ).fetchall()
         return [self._row_to_memory(r) for r in rows]
 
+    def list_all_memories(self, game_id: Optional[str] = None) -> List[Memory]:
+        """取全部记忆(可按存档过滤),供清理脏数据使用。"""
+        if game_id is None:
+            rows = self.conn.execute(
+                "SELECT * FROM memories ORDER BY id ASC"
+            ).fetchall()
+        else:
+            rows = self.conn.execute(
+                "SELECT * FROM memories WHERE game_id = ? ORDER BY id ASC",
+                (game_id,),
+            ).fetchall()
+        return [self._row_to_memory(r) for r in rows]
+
     def promote_memory_to_longterm(self, memory_id: int) -> None:
         self.conn.execute(
             "UPDATE memories SET is_long_term = 1 WHERE id = ?", (memory_id,)
@@ -659,6 +672,7 @@ class Repository:
             exposure_stage=_str("exposure_stage", "normal"),
             debt_stage=_str("debt_stage", "stable"),
             truth_stage=_str("truth_stage", "latent"),
+            exposure_stage_days=_int("exposure_stage_days", 0),
             crisis_days=_int("crisis_days", 0),
         )
 

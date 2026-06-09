@@ -126,3 +126,38 @@ def test_describe_resolved_conflict_warns_not_to_replay(game):
     conflict_engine.tick_conflicts(repo, gid, 3)  # crisis → 截断落槌
     brief = describe_conflicts_for_npc(repo, gid, "gambler")
     assert "已了结" in brief  # 注入了"这事已结算、别再当没发生"的提示
+
+
+# ---- #6 按角色分层:旁观者只得模糊提示,不泄露内情 ----
+def test_bystander_gets_vague_hint_when_participant_hidden(game):
+    """参与者(赌徒)蛰伏后,旁观者(淑芬)只看到'最近不太露面'这类表象,看不到冲突状态。"""
+    repo, gid = game
+    repo.set_world_value(gid, "truth_pressure", 35)
+    conflict_engine.ensure_deal_recording_conflict(repo, gid, 2)
+    repo.set_npc_status(gid, "gambler", "hiding", until_day=8)
+
+    brief_sister = describe_conflicts_for_npc(repo, gid, "sister")
+    assert "不太露面" in brief_sister              # 给了模糊表象
+    assert "录音交易" not in brief_sister           # 不泄露冲突标签
+    assert "RESOLVED" not in brief_sister            # 不泄露状态机
+    assert "NEGOTIATING" not in brief_sister
+
+
+def test_bystander_no_hint_when_all_participants_present(game):
+    """所有参与者都在场时,旁观者得不到任何冲突动静(不凭空生成旁观信息)。"""
+    repo, gid = game
+    repo.set_world_value(gid, "truth_pressure", 35)
+    conflict_engine.ensure_deal_recording_conflict(repo, gid, 2)
+    brief_sister = describe_conflicts_for_npc(repo, gid, "sister")
+    assert brief_sister == ""
+
+
+def test_participant_still_sees_full_state_with_hidden_peer(game):
+    """对照:参与者本人始终看到完整状态(含对手 id 与人话状态),不受旁观分层影响。"""
+    repo, gid = game
+    repo.set_world_value(gid, "truth_pressure", 35)
+    conflict_engine.ensure_deal_recording_conflict(repo, gid, 2)
+    repo.set_npc_status(gid, "gambler", "hiding", until_day=8)
+    brief_gambler = describe_conflicts_for_npc(repo, gid, "gambler")
+    assert "录音交易" in brief_gambler
+    assert "进行中" in brief_gambler

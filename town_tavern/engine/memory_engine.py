@@ -6,11 +6,47 @@
 
 压缩用 LLM 总结;若 LLM 不可用则退化为简单拼接,保证主流程不被阻塞。
 """
+import logging
 from typing import List, Optional
 
 from ..config import LONGTERM_MEMORY_LIMIT, MEMORY_COMPRESS_THRESHOLD
-from ..models.memory import Memory, MemoryType
+from ..models.memory import (
+    Memory, MemoryType, make_memory_content, parse_memory_content,
+)
 from ..storage.repository import Repository
+
+logger = logging.getLogger(__name__)
+
+# 空/废记忆过滤:杜绝形如 "[记忆梳理]"(压缩 LLM 吐空时产生)的空壳进入长期记忆,
+# 污染 NPC 次日决策。阈值按"去掉模板前缀/冒号后的纯内容长度"衡量,取小值只杀真正
+# 空壳,不误伤合法短句(中文一句话往往就 6-12 字)。
+MIN_MEMORY_CONTENT_LEN = 4
+INVALID_MEMORY_CONTENTS = {"", "[记忆梳理]", "[反思]", "None", "null", "none", "NULL"}
+_TEMPLATE_TOKENS = ("[记忆梳理]", "[反思]", "：", ":")
+
+
+def normalize_memory_content(content: Optional[str]) -> str:
+    """去首尾空白;None → 空串。"""
+    if not content:
+        return ""
+    return content.strip()
+
+
+def is_valid_memory_content(content: Optional[str]) -> bool:
+    """内容是否值得写入。空、纯模板头、过短(去模板后)一律判为无效。
+
+    #5:结构化记忆按其【观察事实(observed)】部分衡量长度,避免空 observed 混入。
+    """
+    content = normalize_memory_content(content)
+    if content in INVALID_MEMORY_CONTENTS:
+        return False
+    # 结构化记忆:用 observed 文本判长度(JSON 外壳不算数)。
+    parsed = parse_memory_content(content)
+    stripped = parsed["observed"]
+    for tok in _TEMPLATE_TOKENS:
+        stripped = stripped.replace(tok, "")
+    stripped = stripped.strip()
+    return len(stripped) >= MIN_MEMORY_CONTENT_LEN
 
 
 def write_memory(
@@ -23,10 +59,27 @@ def write_memory(
     importance: int = 50,
     emotional_tag: Optional[str] = None,
     related_npc: Optional[str] = None,
-) -> int:
-    """写入一条记忆,返回记忆 id。重要度高的直接标记为长期记忆。"""
+    interpretation: Optional[str] = None,
+    confidence: Optional[int] = None,
+) -> Optional[int]:
+    """写入一条记忆,返回记忆 id;内容空/无效则【跳过不写】并返回 None。
+
+    所有引擎写记忆都走这里,因此空壳记忆在源头被统一拦截,不会进入决策上下文。
+    重要度高的直接标记为长期记忆。
+
+    #5:传入 interpretation/confidence 时,content 视作【观察事实】,三层一并以 JSON 编码
+    存入(observed/interpretation/confidence);只传 content 则保持纯字符串,向后兼容。
+    """
+    if interpretation is not None or confidence is not None:
+        content = make_memory_content(content, interpretation, confidence)
+    if not is_valid_memory_content(content):
+        logger.warning(
+            "跳过空/无效记忆: npc=%s day=%s type=%s content=%r",
+            npc_id, day, getattr(mtype, "value", mtype), content,
+        )
+        return None
     memory = Memory(
-        npc_id=npc_id, day=day, type=mtype, content=content,
+        npc_id=npc_id, day=day, type=mtype, content=normalize_memory_content(content),
         importance=importance, emotional_tag=emotional_tag,
         related_npc=related_npc, is_long_term=importance >= 80,
     )
@@ -47,7 +100,12 @@ def build_personal_yesterday_summary(
     if not mems:
         return ""
     mems.sort(key=lambda m: m.importance, reverse=True)
-    picked = [m.content.strip() for m in mems[:max_items] if m.content.strip()]
+    # #5:只取【观察事实】拼昨日摘要,不把推测/JSON 外壳带进今天的行动接续。
+    picked = []
+    for m in mems[:max_items]:
+        observed = parse_memory_content(m.content)["observed"].strip()
+        if observed:
+            picked.append(observed)
     if not picked:
         return ""
     return "我昨天:" + "；".join(picked)
@@ -70,13 +128,21 @@ def compress_memories_if_needed(
     if not to_compress:
         return False
 
-    summary = _summarize(to_compress, llm)
+    summary = normalize_memory_content(_summarize(to_compress, llm))
+    content = normalize_memory_content(f"[记忆梳理] {summary}")
+    # LLM 吐空/无效时,绝不写入空壳长期记忆,也【不删除】原始记忆(留待下次再压),
+    # 避免既丢数据又留垃圾。
+    if not is_valid_memory_content(content):
+        logger.warning(
+            "压缩产出空/无效,跳过本次压缩(保留原始记忆): npc=%s day=%s", npc_id, day,
+        )
+        return False
     # 写入压缩后的长期记忆
     repo.add_memory(
         game_id,
         Memory(
             npc_id=npc_id, day=day, type=MemoryType.SYSTEM_EVENT,
-            content=f"[记忆梳理] {summary}", importance=70, is_long_term=True,
+            content=content, importance=70, is_long_term=True,
         ),
     )
     # 删除被压缩的原始短期记忆
@@ -84,15 +150,40 @@ def compress_memories_if_needed(
     return True
 
 
+def purge_invalid_memories(repo: Repository, game_id: Optional[str] = None) -> int:
+    """清理库中已存在的空/无效记忆(空内容、纯模板头、去模板后过短)。
+
+    返回删除条数。用于修复历史脏数据(对应一次性清理脚本)。
+    """
+    rows = repo.list_all_memories(game_id)
+    bad_ids = [m.id for m in rows if m.id is not None and not is_valid_memory_content(m.content)]
+    if bad_ids:
+        repo.delete_memories(bad_ids)
+        logger.info("已清理 %d 条空/无效记忆", len(bad_ids))
+    return len(bad_ids)
+
+
 def _summarize(memories: List[Memory], llm) -> str:
-    """把多条记忆压缩成一句话。优先用 LLM,失败则退化为拼接。"""
-    joined = "；".join(m.content for m in memories)
+    """把多条记忆压缩成一句话。优先用 LLM,失败则退化为拼接。
+
+    #5:压缩 prompt 严禁上帝视角——只能基于该角色亲历/被告知的内容,且必须把"确定的事"
+    与"个人推测"分开,推测要用"我怀疑/可能/看起来"等措辞,绝不把猜测写成事实、
+    不得泄露该角色不可能知道的秘密、不得编造新角色。
+    """
+    # 压缩只读各条的【观察事实】,避免把旧推测当事实层层放大。
+    joined = "；".join(parse_memory_content(m.content)["observed"] for m in memories)
     if llm is None:
         # 退化方案:截断拼接
         return joined[:120]
     try:
-        system = "你帮一个角色把零碎记忆梳理成一句凝练的长期印象,只输出中文一句话,80字内。"
-        user = f"把以下记忆梳理成一句话:\n{joined}"
+        system = (
+            "你帮一个角色把零碎记忆梳理成一句凝练的长期印象,只输出中文一句话,80字内。"
+            "铁律:只能基于该角色亲眼看到/亲耳听到/亲自参与/别人明确告诉他的内容;"
+            "严禁上帝视角,不得写入他不可能知道的秘密或交易内情;"
+            "把握不准的事用『我怀疑/可能/看起来』表述,绝不把推测写成既定事实;"
+            "不得编造新的有名字的角色。"
+        )
+        user = f"把以下记忆梳理成一句话(分清确定的事与你的推测):\n{joined}"
         return llm.chat_text(system, user, temperature=0.3)
     except Exception:
         return joined[:120]

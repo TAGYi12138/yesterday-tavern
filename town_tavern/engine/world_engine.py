@@ -28,7 +28,7 @@ from ..models.event import Event, EventConsequences
 from ..models.memory import MemoryType
 from ..models.world import (
     DEBT_STAGE_THRESHOLDS, EXPOSURE_STAGE_THRESHOLDS, TRUTH_STAGE_THRESHOLDS,
-    stage_of,
+    WorldState, stage_of,
 )
 from ..storage.repository import Repository
 from . import (
@@ -191,6 +191,10 @@ def advance_day(
     # Step 8: 活变量每日演化(债务滚利息、全局紧张度自然衰减)
     _daily_world_tick(repo, game_id)
 
+    # Step 8a(#3):阶段最终结算后,统一维护曝光阶段连续天数 + 派生 crisis_days,
+    # 必须在 tick_crisis 之前,保证危机事件读到的是一致的天数语义。
+    update_exposure_stage(repo, game_id)
+
     # Step 8b(PR3):推进未落槌的冲突一格(当前仅录音交易);可能在有限天数内落槌。
     for line in conflict_engine.tick_conflicts(repo, game_id, new_day):
         _p("  " + line)
@@ -279,6 +283,30 @@ def _settle_stages(repo: Repository, game_id: str) -> None:
         repo.set_world_value(game_id, "debt_stage", new_debt_stage)
     if new_truth_stage != world.truth_stage:
         repo.set_world_value(game_id, "truth_stage", new_truth_stage)
+
+
+def update_exposure_stage(repo: Repository, game_id: str) -> WorldState:
+    """#3:每日【统一】维护曝光阶段的连续天数,杜绝 crisis_days 语义错位。
+
+    须在当天阶段已最终结算(_daily_world_tick 末尾的 _settle_stages 之后)、且在
+    危机硬事件触发(tick_crisis)之前调用一次:
+    - exposure_stage_days:与上一日最终阶段相同则 +1,切换则重置为 1(任意阶段通用);
+    - crisis_days:派生为 exposure_stage_days(仅 crisis 阶段),否则恒为 0。
+
+    用独立锚点 "exposure_stage_prev"(只此处写)记录上一日最终阶段,避免与日内多次
+    _settle_stages 改写的 exposure_stage 互相干扰。返回更新后的世界视图。
+    """
+    world = repo.get_world_state(game_id)
+    stage = world.exposure_stage  # 已是当天最终结算阶段
+    prev = repo.get_world_value(game_id, "exposure_stage_prev")
+    if prev == stage:
+        days = world.exposure_stage_days + 1
+    else:
+        days = 1
+    repo.set_world_value(game_id, "exposure_stage_days", days)
+    repo.set_world_value(game_id, "exposure_stage_prev", stage)
+    repo.set_world_value(game_id, "crisis_days", days if stage == "crisis" else 0)
+    return repo.get_world_state(game_id)
 
 
 def advance_world(

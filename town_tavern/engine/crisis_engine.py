@@ -73,19 +73,16 @@ def _level3_consequence() -> Consequence:
 
 
 def tick_crisis(repo: Repository, game_id: str, day: int) -> List[str]:
-    """每日结算危机倒计时:维护 crisis_days,并按等级触发尚未触发过的硬事件。
+    """每日结算危机倒计时:按等级触发尚未触发过的硬事件。
 
-    须在阶段已结算(exposure_stage 最新)之后调用。返回可读摘要行。
+    crisis_days 的维护已统一上移到 world_engine.update_exposure_stage(#3),
+    这里只【读取】派生后的 crisis_days(crisis 阶段才 >0),据此触发逐级硬事件。
+    须在 update_exposure_stage 之后调用。返回可读摘要行。
     """
     lines: List[str] = []
     world = repo.get_world_state(game_id)
-
-    # 维护连续危机天数:在 crisis 阶段则累加,否则清零并复位倒计时 flag。
-    if world.exposure_stage == "crisis":
-        crisis_days = world.crisis_days + 1
-    else:
-        crisis_days = 0
-    repo.set_world_value(game_id, "crisis_days", crisis_days)
+    # crisis_days 已由 update_exposure_stage 维护:crisis 阶段=连续天数,否则=0。
+    crisis_days = world.crisis_days
 
     if crisis_days <= 0:
         # 离开危机:复位各级触发 flag,以便下次危机能重新逐级升级。
