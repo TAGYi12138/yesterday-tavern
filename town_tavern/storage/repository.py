@@ -25,6 +25,7 @@ from ..config import (
     TRUTH_PRESSURE_MAX,
     TRUTH_PRESSURE_MIN,
 )
+from ..models.clue import PlayerClue
 from ..models.conflict import Conflict, ConflictState
 from ..models.event import Event, EventConsequences, EventType
 from ..models.memory import Memory, MemoryType
@@ -397,6 +398,19 @@ class Repository:
         ).fetchall()
         return [self._row_to_memory(r) for r in rows]
 
+    def list_all_memories(self, game_id: Optional[str] = None) -> List[Memory]:
+        """取全部记忆(可按存档过滤),供清理脏数据使用。"""
+        if game_id is None:
+            rows = self.conn.execute(
+                "SELECT * FROM memories ORDER BY id ASC"
+            ).fetchall()
+        else:
+            rows = self.conn.execute(
+                "SELECT * FROM memories WHERE game_id = ? ORDER BY id ASC",
+                (game_id,),
+            ).fetchall()
+        return [self._row_to_memory(r) for r in rows]
+
     def promote_memory_to_longterm(self, memory_id: int) -> None:
         self.conn.execute(
             "UPDATE memories SET is_long_term = 1 WHERE id = ?", (memory_id,)
@@ -494,6 +508,13 @@ class Repository:
         ).fetchall()
         return [c for c in (self._row_to_conflict(r) for r in rows) if not c.is_resolved()]
 
+    def get_all_conflicts(self, game_id: str) -> List[Conflict]:
+        """返回所有冲突(含已落槌),供 NPC 决策上下文判断"这事已了结、别再谈"。"""
+        rows = self.conn.execute(
+            "SELECT * FROM conflicts WHERE game_id = ?", (game_id,)
+        ).fetchall()
+        return [self._row_to_conflict(r) for r in rows]
+
     def upsert_conflict(self, game_id: str, conflict: Conflict) -> None:
         self.conn.execute(
             """
@@ -554,6 +575,57 @@ class Repository:
         )
 
     # ------------------------------------------------------------------
+    # #3 玩家已知线索(与系统 flag 严格隔离;只由玩家行动写入)
+    # ------------------------------------------------------------------
+    def add_player_clue(self, game_id: str, clue: PlayerClue) -> None:
+        """记入/更新一条玩家已知线索。
+
+        同 id 再次发现时:刷新来源/发现日,并【取较高把握度】(玩家更确信了就升,
+        不会因重复发现而降级)。注意:本方法【绝不】由系统 flag 变化自动调用——
+        只应由玩家的观察/询问/偷听/交易/被告知等行为触发。
+        """
+        existing = self.get_player_clue(game_id, clue.id)
+        certainty = clue.certainty
+        if existing is not None:
+            certainty = max(existing.certainty, clue.certainty)
+        self.conn.execute(
+            """
+            INSERT INTO player_known_clues (game_id, id, title, source, certainty, day_found)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(game_id, id) DO UPDATE SET
+                title=excluded.title, source=excluded.source,
+                certainty=excluded.certainty, day_found=excluded.day_found
+            """,
+            (game_id, clue.id, clue.title, clue.source,
+             max(0, min(100, certainty)), clue.day_found),
+        )
+        self.conn.commit()
+
+    def get_player_clue(self, game_id: str, clue_id: str) -> Optional[PlayerClue]:
+        row = self.conn.execute(
+            "SELECT * FROM player_known_clues WHERE game_id = ? AND id = ?",
+            (game_id, clue_id),
+        ).fetchone()
+        return self._row_to_clue(row) if row else None
+
+    def get_player_clues(self, game_id: str) -> List[PlayerClue]:
+        rows = self.conn.execute(
+            "SELECT * FROM player_known_clues WHERE game_id = ? ORDER BY day_found ASC, id ASC",
+            (game_id,),
+        ).fetchall()
+        return [self._row_to_clue(r) for r in rows]
+
+    def has_player_clue(self, game_id: str, clue_id: str) -> bool:
+        return self.get_player_clue(game_id, clue_id) is not None
+
+    @staticmethod
+    def _row_to_clue(row: sqlite3.Row) -> PlayerClue:
+        return PlayerClue(
+            id=row["id"], title=row["title"], source=row["source"],
+            certainty=row["certainty"], day_found=row["day_found"],
+        )
+
+    # ------------------------------------------------------------------
     # 世界状态
     # ------------------------------------------------------------------
     def get_world_value(self, game_id: str, key: str) -> Optional[str]:
@@ -562,6 +634,14 @@ class Repository:
             (game_id, key),
         ).fetchone()
         return row["value"] if row else None
+
+    def get_all_flags(self, game_id: str) -> dict:
+        """返回所有剧情 flag(键去掉 flag_ 前缀 → bool),供 debug 报告罗列系统真实状态。"""
+        rows = self.conn.execute(
+            "SELECT key, value FROM world_state WHERE game_id = ? AND key LIKE 'flag_%'",
+            (game_id,),
+        ).fetchall()
+        return {r["key"][len("flag_"):]: (r["value"] == "1") for r in rows}
 
     def set_world_value(self, game_id: str, key: str, value) -> None:
         self.conn.execute(
@@ -592,6 +672,7 @@ class Repository:
             exposure_stage=_str("exposure_stage", "normal"),
             debt_stage=_str("debt_stage", "stable"),
             truth_stage=_str("truth_stage", "latent"),
+            exposure_stage_days=_int("exposure_stage_days", 0),
             crisis_days=_int("crisis_days", 0),
         )
 

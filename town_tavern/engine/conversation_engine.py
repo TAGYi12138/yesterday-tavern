@@ -30,7 +30,7 @@ from ..models.event import (
 )
 from ..models.memory import MemoryType
 from ..storage.repository import Repository
-from . import event_engine, memory_engine, relationship_engine
+from . import conflict_engine, event_engine, memory_engine, relationship_engine
 
 # 独自行动可用的动作(对方无需在场/不知情)
 _SOLO_VERBS = {
@@ -495,9 +495,14 @@ def run_social_day(
             personal_yesterday = memory_engine.build_personal_yesterday_summary(
                 repo, game_id, npc.id, day
             )
+            # #2:注入该 NPC【本人参与】的冲突当前状态(含已结算),防止聊已了结的旧交易。
+            conflict_brief = conflict_engine.describe_conflicts_for_npc(
+                repo, game_id, npc.id
+            )
             system, user = prompts.build_turn_decision_prompt(
                 npc, recent, longterm, world, others, r, CONV_ROUNDS,
                 personal_yesterday=personal_yesterday,
+                conflict_brief=conflict_brief,
             )
             dec_jobs.append((system, user, TurnDecision))
         decisions = _gather_json(llm, dec_jobs)

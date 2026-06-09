@@ -5,7 +5,7 @@
 from typing import List, Optional
 
 from ..models.event import EventType
-from ..models.memory import Memory
+from ..models.memory import Memory, parse_memory_content
 from ..models.npc import NPC
 from ..models.relationship import Relationship
 from ..models.world import WorldState
@@ -24,16 +24,29 @@ GUARDRAIL = (
 
 
 def _memories_text(recent: List[Memory], longterm: List[Memory]) -> str:
-    """把记忆列表渲染成文本块。"""
-    lines = []
-    if longterm:
-        lines.append("【你的长期重要记忆】")
-        for m in longterm:
-            lines.append(f"- (第{m.day}天) {m.content}")
-    if recent:
-        lines.append("【你最近的记忆】")
-        for m in recent:
-            lines.append(f"- (第{m.day}天) {m.content}")
+    """把记忆列表渲染成文本块。
+
+    #5:把【我确定知道的事(观察事实)】与【我的推测】分开呈现,推测带可信度。
+    纯字符串记忆(无推测)只进"确定知道的事";让 NPC 带着可能的误判去行动,更像真人。
+    """
+    facts: List[str] = []        # (来源, 天, 观察事实)
+    guesses: List[str] = []      # (天, 推测 + 可信度)
+    for label, mems in (("长期", longterm), ("最近", recent)):
+        for m in mems:
+            p = parse_memory_content(m.content)
+            if p["observed"]:
+                facts.append(f"- (第{m.day}天·{label}) {p['observed']}")
+            if p["interpretation"]:
+                conf = f"(可信度 {p['confidence']})" if p["confidence"] is not None else ""
+                guesses.append(f"- (第{m.day}天) {p['interpretation']}{conf}")
+
+    lines: List[str] = []
+    if facts:
+        lines.append("【我确定知道的事】")
+        lines.extend(facts)
+    if guesses:
+        lines.append("【我的推测(可能有误,别当成事实)】")
+        lines.extend(guesses)
     if not lines:
         lines.append("(暂无特别记忆)")
     return "\n".join(lines)
@@ -383,11 +396,15 @@ def build_turn_decision_prompt(
     round_no: int,
     total_rounds: int,
     personal_yesterday: str = "",
+    conflict_brief: str = "",
 ) -> tuple[str, str]:
     """构造"某 NPC 本轮要做什么"的 (system, user) prompt。返回 TurnDecision。
 
     NPC 根据自己【已知的信息】(只有自己的记忆 + 公开观察)决定:找谁说话,
     或独自去做一件不需要对话的事(暗中调查/掩盖/回避)。
+
+    conflict_brief(#2):该 NPC【本人参与】的冲突当前状态(含已结算)。注入后可避免
+    冲突落槌后第二天还像没发生一样继续谈旧交易;严守知识隔离——只含其自己的冲突。
     """
     system = (
         f"{GUARDRAIL}\n\n"
@@ -402,11 +419,22 @@ def build_turn_decision_prompt(
     directive_block = f"【当前局势压力(请据此调整你的行动姿态)】\n{directive}\n\n" if directive else ""
     # PR5:只属于"你自己"的昨日个人摘要(知识隔离),帮助今天的行动接得上昨天。
     yesterday_block = f"【你昨天自己做/经历的事(只有你知道)】\n{personal_yesterday}\n\n" if personal_yesterday else ""
+    # #6:冲突上下文(参与者全量 + 旁观者模糊提示),并附"你必须遵守这些状态"的硬约束,
+    # 防止落槌后第二天还谈旧交易、或当面去找已经躲起来的人。
+    conflict_block = (
+        f"【你当前感知到的局面】\n{conflict_brief}\n"
+        "你必须遵守这些状态:\n"
+        "- 如果某人最近不露面(已躲起来/离场),不要假设他在场、更不要当面找他说话。\n"
+        "- 如果一桩交易/对峙已经了结或作废,不要再当它没发生、重复发起同一桩旧事。\n"
+        "- 如果证据已被扣下或损毁,不要假装它还安然在手。\n"
+        "- 对你只是旁观到的事,只能依据表象去猜,不要说得像你知道内情。\n\n"
+    ) if conflict_brief else ""
     user = (
         f"【场景】此刻你在『昨日酒馆』店内(镇上唯一的酒馆,你们都在这儿)。\n"
         f"【当前状态】压力:{npc.stress}/100,当前目标:{npc.current_goal}\n"
         f"世界:{world.summary_text()}\n\n"
         f"{yesterday_block}"
+        f"{conflict_block}"
         f"{directive_block}"
         f"【此刻同在酒馆、你可以找其搭话的人(附你对各人的关系,据此判断该亲近/试探/回避谁)】\n"
         f"{others_text}\n\n"

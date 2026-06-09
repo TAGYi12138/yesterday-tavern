@@ -14,6 +14,7 @@
 """
 from typing import List
 
+from ..config import CRISIS_ESCALATION_INTERVAL
 from ..models.consequence import (
     Consequence, MemorySpec, NpcStatusChange, RelationshipChange,
 )
@@ -72,19 +73,16 @@ def _level3_consequence() -> Consequence:
 
 
 def tick_crisis(repo: Repository, game_id: str, day: int) -> List[str]:
-    """每日结算危机倒计时:维护 crisis_days,并按等级触发尚未触发过的硬事件。
+    """每日结算危机倒计时:按等级触发尚未触发过的硬事件。
 
-    须在阶段已结算(exposure_stage 最新)之后调用。返回可读摘要行。
+    crisis_days 的维护已统一上移到 world_engine.update_exposure_stage(#3),
+    这里只【读取】派生后的 crisis_days(crisis 阶段才 >0),据此触发逐级硬事件。
+    须在 update_exposure_stage 之后调用。返回可读摘要行。
     """
     lines: List[str] = []
     world = repo.get_world_state(game_id)
-
-    # 维护连续危机天数:在 crisis 阶段则累加,否则清零并复位倒计时 flag。
-    if world.exposure_stage == "crisis":
-        crisis_days = world.crisis_days + 1
-    else:
-        crisis_days = 0
-    repo.set_world_value(game_id, "crisis_days", crisis_days)
+    # crisis_days 已由 update_exposure_stage 维护:crisis 阶段=连续天数,否则=0。
+    crisis_days = world.crisis_days
 
     if crisis_days <= 0:
         # 离开危机:复位各级触发 flag,以便下次危机能重新逐级升级。
@@ -93,24 +91,27 @@ def tick_crisis(repo: Repository, game_id: str, day: int) -> List[str]:
                 repo.set_world_value(game_id, f"flag_{fl}", "0")
         return lines
 
-    # 逐级硬事件(各靠 flag 保证只触发一次)
-    if crisis_days >= 1 and not get_flag(repo, game_id, _CRISIS_FLAG_L1):
+    # 逐级硬事件(各靠 flag 保证只触发一次)。
+    # 升级节奏可配置:第 n 级在 crisis_days 达到 n*间隔 时触发。debug_fast 间隔=1 即
+    # 逐天升级(历史行为);demo_normal/slow_burn 把硬事件之间拉开(间隔=2/3天)。
+    step = CRISIS_ESCALATION_INTERVAL
+    if crisis_days >= 1 * step and not get_flag(repo, game_id, _CRISIS_FLAG_L1):
         applied = apply_consequence(repo, game_id, _level1_consequence(), day, source="crisis")
-        lines.append("[危机·第1天] 老陈威胁证人闭嘴。 " + "; ".join(applied))
-    if crisis_days >= 2 and not get_flag(repo, game_id, _CRISIS_FLAG_L2):
+        lines.append("[危机·第1级] 老陈威胁证人闭嘴。 " + "; ".join(applied))
+    if crisis_days >= 2 * step and not get_flag(repo, game_id, _CRISIS_FLAG_L2):
         applied = apply_consequence(repo, game_id, _level2_consequence(), day, source="crisis")
-        lines.append("[危机·第2天] 强行搜查,赌徒被迫蛰伏。 " + "; ".join(applied))
-    if crisis_days >= 3 and not get_flag(repo, game_id, _CRISIS_FLAG_L3):
+        lines.append("[危机·第2级] 强行搜查,赌徒被迫蛰伏。 " + "; ".join(applied))
+    if crisis_days >= 3 * step and not get_flag(repo, game_id, _CRISIS_FLAG_L3):
         applied = apply_consequence(repo, game_id, _level3_consequence(), day, source="crisis")
-        lines.append("[危机·第3天] 关键人连夜离场,留下二级线索。 " + "; ".join(applied))
-    if crisis_days >= 4 and not get_flag(repo, game_id, _CRISIS_FLAG_L4):
+        lines.append("[危机·第3级] 关键人连夜离场,留下二级线索。 " + "; ".join(applied))
+    if crisis_days >= 4 * step and not get_flag(repo, game_id, _CRISIS_FLAG_L4):
         forced = conflict_engine.force_resolve_deal_recording(
-            repo, game_id, day, reason="危机第4天:局势不容再拖,交易被强行了结"
+            repo, game_id, day, reason="危机升级到顶:局势不容再拖,交易被强行了结"
         )
         repo.set_world_value(game_id, f"flag_{_CRISIS_FLAG_L4}", "1")
         if forced:
-            lines.append("[危机·第4天] " + forced)
+            lines.append("[危机·第4级] " + forced)
         else:
-            lines.append("[危机·第4天] 强制结算:录音交易已无可结算项。")
+            lines.append("[危机·第4级] 强制结算:录音交易已无可结算项。")
 
     return lines

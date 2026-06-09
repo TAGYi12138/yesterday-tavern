@@ -4,6 +4,7 @@ from town_tavern.engine.consequence import get_flag
 from town_tavern.engine.memory_engine import (
     build_personal_yesterday_summary, write_memory,
 )
+from town_tavern.engine.world_engine import update_exposure_stage
 from town_tavern.models.memory import MemoryType
 from town_tavern.models.world import WorldState
 
@@ -22,17 +23,20 @@ def test_crisis_escalation_levels_and_red_line(game):
     repo.set_world_value(gid, "exposure_stage", "crisis")
     before_truth_prog = repo.get_world_state(gid).athou_truth_progress
 
-    # 第1天:威胁证人
+    # 第1天:威胁证人(crisis_days 现由 update_exposure_stage 统一维护)
+    update_exposure_stage(repo, gid)
     crisis_engine.tick_crisis(repo, gid, 2)
     assert repo.get_world_state(gid).crisis_days == 1
     assert get_flag(repo, gid, "crisis_witness_threatened")
 
     # 第2天:搜查,赌徒蛰伏
+    update_exposure_stage(repo, gid)
     crisis_engine.tick_crisis(repo, gid, 3)
     assert repo.get_world_state(gid).crisis_days == 2
     assert repo.get_npc(gid, "gambler").status == "hiding"
 
     # 第3天:失踪/抢证 → 必带二级线索(红线#2)
+    update_exposure_stage(repo, gid)
     crisis_engine.tick_crisis(repo, gid, 4)
     assert repo.get_world_state(gid).crisis_days == 3
     assert get_flag(repo, gid, "crisis_disappearance")
@@ -45,10 +49,12 @@ def test_crisis_escalation_levels_and_red_line(game):
 def test_crisis_days_reset_when_leaving_crisis(game):
     repo, gid = game
     repo.set_world_value(gid, "exposure_stage", "crisis")
+    update_exposure_stage(repo, gid)
     crisis_engine.tick_crisis(repo, gid, 2)
     assert repo.get_world_state(gid).crisis_days == 1
     # 离开危机阶段:清零并复位触发 flag
     repo.set_world_value(gid, "exposure_stage", "watching")
+    update_exposure_stage(repo, gid)
     crisis_engine.tick_crisis(repo, gid, 3)
     assert repo.get_world_state(gid).crisis_days == 0
     assert not get_flag(repo, gid, "crisis_witness_threatened")
