@@ -672,6 +672,7 @@ class Repository:
             exposure_stage=_str("exposure_stage", "normal"),
             debt_stage=_str("debt_stage", "stable"),
             truth_stage=_str("truth_stage", "latent"),
+            exposure_stage_days=_int("exposure_stage_days", 0),
             crisis_days=_int("crisis_days", 0),
         )
 

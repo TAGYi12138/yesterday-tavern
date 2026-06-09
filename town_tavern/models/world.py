@@ -87,9 +87,12 @@ class WorldState(BaseModel):
     exposure_stage: str = Field(default="normal", description="曝光风险阶段(带迟滞)")
     debt_stage: str = Field(default="stable", description="债务阶段(带迟滞)")
     truth_stage: str = Field(default="latent", description="真相压力阶段(带迟滞)")
-    # PR4:危机连续天数。曝光进入 crisis 阶段后逐日累加;离开 crisis 即清零。
-    # 用于按倒计时触发逐级加重的硬事件(威胁证人→搜查扣押→失踪/抢证→强制结算)。
-    crisis_days: int = Field(default=0, description="连续处于曝光危机阶段的天数")
+    # #3:曝光阶段【通用】连续天数——当前 exposure_stage 已持续几天(任意阶段都计数)。
+    # 每日由 update_exposure_stage 统一维护:阶段不变则 +1,阶段切换则重置为 1。
+    exposure_stage_days: int = Field(default=0, description="当前曝光阶段已持续的天数(通用)")
+    # PR4(保留兼容):危机连续天数。语义 = exposure_stage_days if stage==crisis else 0,
+    # 由 update_exposure_stage 派生维护,杜绝"suppressing 阶段却 crisis_days>0"的语义错位。
+    crisis_days: int = Field(default=0, description="连续处于曝光危机阶段的天数(派生兼容字段)")
 
     def tension_target(self) -> int:
         """PR6:按当前三条态势【阶段】算出全局紧张度的"目标档位"(0-100)。

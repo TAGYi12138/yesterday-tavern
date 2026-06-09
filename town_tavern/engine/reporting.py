@@ -86,7 +86,11 @@ def build_debug_report(repo: Repository, game_id: str, day: int) -> str:
     lines: List[str] = [f"==== Debug 报告 · 第{day}天 ===="]
     lines.append(world.summary_text())
     lines.append(world.debug_state_text())
-    lines.append(f"真相压力{world.truth_pressure}/阶段{world.truth_stage} | 危机连续{world.crisis_days}天")
+    lines.append(
+        f"真相压力{world.truth_pressure}/阶段{world.truth_stage} | "
+        f"曝光阶段{world.exposure_stage}已持续{world.exposure_stage_days}天 | "
+        f"危机连续{world.crisis_days}天"
+    )
 
     conflicts = repo.get_all_conflicts(game_id)
     if conflicts:
