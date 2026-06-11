@@ -1,6 +1,7 @@
 """NPC 引擎:对话回复、主动搭话 与 今日意图生成。"""
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
+from ..config import NPC_SATURATION_STRESS
 from ..llm import prompts
 from ..llm.client import LLMClient
 from ..models.action import DialogueResult, NPCIntention, ReflectionResult
@@ -15,6 +16,32 @@ from .action_engine import ActionCostError
 INITIATIVE_THRESHOLD = 65
 # 同一 NPC 当天免费额度用完后,继续追问消耗的行动点
 TALK_AP_COST = 1
+
+# P3:压力饱和后可落的心理状态——使"压力满"改变行为而非僵在日常。
+_MENTAL_STATES = ["reckless", "paranoid", "withdrawn", "confession_ready"]
+
+
+def _pick_mental_state(npc: NPC) -> str:
+    """按 NPC 身份稳定挑一个心理状态(确定性,便于回归测试且每人侧写一致)。"""
+    idx = sum(ord(c) for c in npc.id) % len(_MENTAL_STATES)
+    return _MENTAL_STATES[idx]
+
+
+def update_mental_states(repo: Repository, game_id: str) -> List[str]:
+    """P3:每日结算各 NPC 的心理状态——压力见顶(>=NPC_SATURATION_STRESS)即落一个
+    mental_state,使其决策从"日常交谈"切到失常侧写;压力回落则恢复常态。返回可读摘要行。
+    """
+    lines: List[str] = []
+    for npc in repo.get_all_npcs(game_id):
+        if npc.stress >= NPC_SATURATION_STRESS:
+            if not npc.mental_state:
+                state = _pick_mental_state(npc)
+                repo.set_npc_mental_state(game_id, npc.id, state)
+                lines.append(f"[心理] {npc.name} 压力见顶,陷入「{state}」。")
+        elif npc.mental_state:
+            repo.set_npc_mental_state(game_id, npc.id, "")
+            lines.append(f"[心理] {npc.name} 缓过一口气,渐渐恢复常态。")
+    return lines
 
 
 def talk_to_npc(

@@ -8,9 +8,14 @@ from typing import List, Tuple
 from pydantic import BaseModel, Field
 
 from ..config import (
-    DEBT_CRITICAL, DEBT_DANGER, DEBT_WARN,
+    AWAIT_PLAYER_TENSION, DEBT_CRITICAL, DEBT_DANGER, DEBT_WARN,
     EXPOSURE_CRITICAL, EXPOSURE_DANGER, EXPOSURE_WATCH,
+    TRUTH_PRESSURE_PLATFORM,
 )
+
+# P0:世界运行相位——running(正常自动演化)/ awaiting_player(已烧到临界,停在爆点等玩家)。
+WORLD_PHASE_RUNNING = "running"
+WORLD_PHASE_AWAITING_PLAYER = "awaiting_player"
 
 # 真相压力阶段(C1):latent(潜伏)→ stirring(暗涌)→ closing_in(逼近)→ boiling(沸点)
 # 仅由 NPC 自运行累积,用于加剧危机局势;不代表玩家已揭开真相。
@@ -96,6 +101,12 @@ class WorldState(BaseModel):
     # #4:危机生命周期阶段机——none(无危机)→ active(危机中,逐级硬事件)→
     # cooling(烧到顶后降温,主动压低曝光)→ aftermath(余波宽限,不再强触发硬事件)→ none。
     crisis_phase: str = Field(default="none", description="危机生命周期阶段:none/active/cooling/aftermath")
+    # P0:世界运行相位——awaiting_player 时停止自动推进核心冲突/危机升级/继续堆压,只留低强度日常。
+    world_phase: str = Field(default=WORLD_PHASE_RUNNING, description="世界相位:running/awaiting_player")
+    # P0:玩家上次行动的游戏天(用于判定长期无人值守);无人值守时恒为 0。
+    player_last_seen_day: int = Field(default=0, description="玩家上次行动的游戏天")
+    # P1:债务终局倒计时——债务到 seizing 后剩余天数;归零即停在"酒馆将被接管"的最后一天等玩家。
+    debt_seize_countdown: int = Field(default=-1, description="债务接管倒计时剩余天数(-1=未启动)")
 
     def tension_target(self) -> int:
         """PR6:按当前三条态势【阶段】算出全局紧张度的"目标档位"(0-100)。
@@ -112,6 +123,25 @@ class WorldState(BaseModel):
             debt_tier.get(self.debt_stage, 10),
             truth_tier.get(self.truth_stage, 10),
         )
+
+    def is_awaiting_player(self) -> bool:
+        """世界是否已停在爆点等待玩家介入(自动推进被封顶)。"""
+        return self.world_phase == WORLD_PHASE_AWAITING_PLAYER
+
+    def climax_reached(self) -> bool:
+        """世界是否已演化到"高压临界":再自动跑下去也只是空转,应停在爆点等玩家。
+
+        判定:真相压力绷到平台 且 全局紧张度达到阈值(暗流烧开且全镇高压),
+        或债务已到 seizing(濒临卖店)。三条活变量任一封顶即视为到顶。
+        """
+        return (
+            (self.truth_pressure >= TRUTH_PRESSURE_PLATFORM and self.global_tension >= AWAIT_PLAYER_TENSION)
+            or self.debt_stage == "seizing"
+        )
+
+    def player_idle_days(self) -> int:
+        """距玩家上次行动已过去的游戏天数(无人值守时即 current_day)。"""
+        return self.current_day - self.player_last_seen_day
 
     def debt_level(self) -> str:
         """把债务金额映射为危险等级标签。"""
@@ -159,6 +189,14 @@ class WorldState(BaseModel):
         注意:这只推动【局势】(防守/施压),绝不揭示阿土真相——真相仍归玩家。
         """
         lines: List[str] = []
+        # P0:已停在爆点等玩家——所有人都僵在临界点,不再主动加码,只剩低强度的观望、
+        # 盯梢、收拾残局与等待变数。【覆盖】其余施压口径,把世界稳定在"等人推门"的状态。
+        if self.is_awaiting_player():
+            return (
+                "【局势·封顶】局势已烧到临界、众人都已绷到极限,谁也不愿再先动手:此刻只剩"
+                "压抑的观望、彼此盯梢、收拾残局与等待——不要再挑起新的冲突或把事情推得更狠,"
+                "像是都在等什么人推门进来、打破这口将沸未沸的僵局。"
+            )
         # #4:危机降温/余波期——局势已过顶峰,老陈收敛锋芒;此时【覆盖】曝光阶段施压口径,
         # 但债务/真相暗流仍各自照常(它们与危机生命周期相互独立)。
         if self.crisis_phase == "cooling":

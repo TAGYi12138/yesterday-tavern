@@ -15,8 +15,9 @@ from datetime import datetime, timezone
 from typing import Callable, List, Optional
 
 from ..config import (
-    CONVERSATION_MODE, DEBT_DAILY_INTEREST,
-    DEBT_HIGH_INTEREST_MULT, DEBT_PLATFORM, DEBT_STRESS_THRESHOLD,
+    AWAIT_PLAYER_IDLE_DAYS, CONVERSATION_MODE, DEBT_DAILY_INTEREST,
+    DEBT_HIGH_INTEREST_MULT, DEBT_PLATFORM, DEBT_SEIZE_COUNTDOWN_DAYS,
+    DEBT_STRESS_THRESHOLD,
     EXPOSURE_DAILY_DECAY, EXPOSURE_PLATFORM, MAX_AUTO_ADVANCE_DAYS,
     PER_NPC_ACTION_LLM, REAL_SECONDS_PER_DAY, REFLECTION_INTERVAL_DAYS,
     RELATION_MIN, RELATION_MAX, STAGE_HYSTERESIS, TENSION_DAILY_DECAY,
@@ -28,6 +29,7 @@ from ..models.event import Event, EventConsequences
 from ..models.memory import MemoryType
 from ..models.world import (
     DEBT_STAGE_THRESHOLDS, EXPOSURE_STAGE_THRESHOLDS, TRUTH_STAGE_THRESHOLDS,
+    WORLD_PHASE_AWAITING_PLAYER, WORLD_PHASE_RUNNING,
     WorldState, stage_of,
 )
 from ..storage.repository import Repository
@@ -195,8 +197,15 @@ def advance_day(
     # 必须在 tick_crisis 之前,保证危机事件读到的是一致的天数语义。
     update_exposure_stage(repo, game_id)
 
-    # Step 8b(PR3):推进未落槌的冲突一格(当前仅录音交易);可能在有限天数内落槌。
-    for line in conflict_engine.tick_conflicts(repo, game_id, new_day):
+    # Step 8a2(P0):无人值守封顶——按“高压临界 / 玩家长期缺席”结算世界相位。
+    # 必须在阶段结算之后、冲突/危机推进之前,使后续步骤读到一致的 world_phase。
+    phase = update_world_phase(repo, game_id)
+    if phase == WORLD_PHASE_AWAITING_PLAYER:
+        _p("  [世界·封顶] 局势已烧到临界,自动演化停在爆点,静待玩家推门介入。")
+
+    # Step 8b(PR3):推进未落槌的冲突一格;awaiting_player 时不再新建主线冲突,仅让已有的继续落槌。
+    allow_new = phase != WORLD_PHASE_AWAITING_PLAYER
+    for line in conflict_engine.tick_conflicts(repo, game_id, new_day, allow_new=allow_new):
         _p("  " + line)
 
     # Step 8c(PR4):危机倒计时——曝光绷在 crisis 阶段时按连续天数触发逐级硬事件。
@@ -208,10 +217,73 @@ def advance_day(
     for line in crisis_engine.tick_crisis_phase(repo, game_id, new_day):
         _p("  " + line)
 
+    # Step 8e(P1):债务终局——seizing 后启动接管倒计时,归零即停在最后一天等玩家介入。
+    for line in tick_debt_endgame(repo, game_id, new_day):
+        _p("  " + line)
+
+    # Step 8f(P3):压力饱和后的心理状态——压力见顶即落 mental_state,使"压力满"改变行为。
+    for line in npc_engine.update_mental_states(repo, game_id):
+        _p("  " + line)
+
     # Step 9: 推进天数,并为新的一天重置玩家行动点与免费聊天额度
     repo.increment_day(game_id)
     repo.reset_player_day(game_id)
     return event
+
+
+def update_world_phase(repo: Repository, game_id: str) -> str:
+    """P0:结算世界运行相位(running / awaiting_player)并持久化,返回新相位。
+
+    进入 awaiting_player 的条件(满足其一):
+      - 高压临界:世界已烧到顶(climax_reached),再自动跑也只是空转;
+      - 玩家长期缺席:距上次玩家行动 >= AWAIT_PLAYER_IDLE_DAYS(无人值守恒成立)。
+
+    相位会随条件松弛而退回 running——玩家介入压低压力后,世界即可重新自动演化。
+    """
+    world = repo.get_world_state(game_id)
+    should_await = world.climax_reached() or world.player_idle_days() >= AWAIT_PLAYER_IDLE_DAYS
+    new_phase = WORLD_PHASE_AWAITING_PLAYER if should_await else WORLD_PHASE_RUNNING
+    if new_phase != world.world_phase:
+        repo.set_world_value(game_id, "world_phase", new_phase)
+    return new_phase
+
+
+def tick_debt_endgame(repo: Repository, game_id: str, day: int) -> List[str]:
+    """P1:债务终局——债务到 seizing(濒临卖店)后启动接管倒计时。
+
+    seizing 后不再只是"利息封顶顶着数值",而是:
+      - 首次进入:下最后通牒,启动 DEBT_SEIZE_COUNTDOWN_DAYS 天倒计时;
+      - 每天递减,直到只剩最后一天即【停住】,不再自动落槌——把酒馆命运留给玩家
+        (玩家未介入则永远停在"接管在即"的门口,可选择还债/找证据/举报/放弃)。
+    退出 seizing(债务被压下)则复位倒计时。返回可读摘要行。
+    """
+    world = repo.get_world_state(game_id)
+    lines: List[str] = []
+
+    if world.debt_stage != "seizing":
+        if world.debt_seize_countdown >= 0:
+            repo.set_world_value(game_id, "debt_seize_countdown", -1)
+        return lines
+
+    cd = world.debt_seize_countdown
+    if cd < 0:
+        repo.set_world_value(game_id, "debt_seize_countdown", DEBT_SEIZE_COUNTDOWN_DAYS)
+        lines.append(
+            f"[债务·终局] 钱庄下了最后通牒:{DEBT_SEIZE_COUNTDOWN_DAYS} 天内还不上,酒馆将被接管。"
+        )
+        return lines
+
+    if cd <= 1:
+        # 停在最后一天等玩家:不再递减、不自动落槌。
+        if cd != 1:
+            repo.set_world_value(game_id, "debt_seize_countdown", 1)
+        lines.append("[债务·终局] 接管在即,只剩最后一天——酒馆的命运停在玩家面前,等人推门。")
+        return lines
+
+    new_cd = cd - 1
+    repo.set_world_value(game_id, "debt_seize_countdown", new_cd)
+    lines.append(f"[债务·终局] 接管倒计时还剩 {new_cd} 天,阿财六神无主,四处求人。")
+    return lines
 
 
 def _daily_world_tick(repo: Repository, game_id: str) -> None:

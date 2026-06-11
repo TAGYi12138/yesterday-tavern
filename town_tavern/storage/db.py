@@ -55,6 +55,7 @@ def init_db(conn: sqlite3.Connection) -> None:
             money INTEGER DEFAULT 0,
             status TEXT DEFAULT 'active',
             status_until_day INTEGER DEFAULT 0,
+            mental_state TEXT DEFAULT '',
             PRIMARY KEY (game_id, id)
         )
         """
@@ -192,3 +193,6 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE npcs ADD COLUMN status TEXT DEFAULT 'active'")
     if "status_until_day" not in existing:
         conn.execute("ALTER TABLE npcs ADD COLUMN status_until_day INTEGER DEFAULT 0")
+    # P3:压力饱和后的心理状态(reckless/paranoid/withdrawn/confession_ready),使"压力满"改变行为。
+    if "mental_state" not in existing:
+        conn.execute("ALTER TABLE npcs ADD COLUMN mental_state TEXT DEFAULT ''")

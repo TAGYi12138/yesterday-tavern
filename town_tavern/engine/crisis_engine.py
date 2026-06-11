@@ -81,6 +81,9 @@ def tick_crisis(repo: Repository, game_id: str, day: int) -> List[str]:
     """
     lines: List[str] = []
     world = repo.get_world_state(game_id)
+    # P0:世界已停在爆点等玩家时——冻结危机升级,不再触发新硬事件(保持临界不加码)。
+    if world.is_awaiting_player():
+        return lines
     # crisis_days 已由 update_exposure_stage 维护:crisis 阶段=连续天数,否则=0。
     crisis_days = world.crisis_days
 
@@ -154,9 +157,11 @@ def tick_crisis_phase(repo: Repository, game_id: str, day: int) -> List[str]:
             if get_flag(repo, game_id, fl):
                 repo.set_world_value(game_id, f"flag_{fl}", "0")
 
-    # 0) 进入危机:none → active(余波宽限期内不立刻重燃,见 aftermath 分支)。
+    # 0) 进入危机:none → active。
+    # P0:awaiting_player(已停在爆点等玩家)时【不】重燃危机——这正是无人值守下
+    # 曝光被事件反复顶回 crisis、危机 none→active→cooling→aftermath→none 无限循环的根因。
     if phase == "none":
-        if stage == "crisis":
+        if stage == "crisis" and not world.is_awaiting_player():
             _set_phase("active")
             lines.append("[危机·阶段] 局势进入危机,老陈开始不择手段。")
         return lines

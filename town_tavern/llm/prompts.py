@@ -23,6 +23,12 @@ GUARDRAIL = (
 )
 
 
+def _mental_block(npc: NPC) -> str:
+    """P3:把 NPC 压力饱和后的心理状态渲染成可拼接的提示块(未饱和返回空串)。"""
+    text = npc.mental_state_text()
+    return text + "\n" if text else ""
+
+
 def _memories_text(recent: List[Memory], longterm: List[Memory]) -> str:
     """把记忆列表渲染成文本块。
 
@@ -214,6 +220,7 @@ def build_intention_prompt(
     )
     user = (
         f"【当前状态】\n压力:{npc.stress}/100\n当前目标:{npc.current_goal}\n"
+        f"{_mental_block(npc)}"
         f"世界:{world.summary_text()}\n\n"
         f"{_memories_text(recent, longterm)}\n\n"
         "输出 JSON:\n"
@@ -432,6 +439,7 @@ def build_turn_decision_prompt(
     user = (
         f"【场景】此刻你在『昨日酒馆』店内(镇上唯一的酒馆,你们都在这儿)。\n"
         f"【当前状态】压力:{npc.stress}/100,当前目标:{npc.current_goal}\n"
+        f"{_mental_block(npc)}"
         f"世界:{world.summary_text()}\n\n"
         f"{yesterday_block}"
         f"{conflict_block}"
@@ -659,6 +667,7 @@ def build_reflection_prompt(
     )
     user = (
         f"【当前状态】\n压力:{npc.stress}/100\n当前目标:{npc.current_goal}\n"
+        f"{_mental_block(npc)}"
         f"世界:{world.summary_text()}\n\n"
         f"{_memories_text(recent, longterm)}\n\n"
         "输出 JSON:\n"

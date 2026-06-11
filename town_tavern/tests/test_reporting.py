@@ -184,3 +184,22 @@ def test_event_core_absent_without_llm(game):
     ))
     report = build_player_report(repo, gid, 4)
     assert "今日小结" not in report
+
+
+def test_player_reports_for_games_threads_llm(game):
+    """P2:批量汇总把 llm 透传给逐局 build_player_report,使 daemon 报告走事件核渲染。"""
+    repo, gid = game
+    repo.set_world_value(gid, "current_day", 4)
+    repo.add_event(gid, Event(
+        day=4, type=EventType.DAILY_LIFE, title="角落",
+        summary="小林和淑芬在角落低声交谈。", actors=["reporter", "sister"], visibility="public",
+    ))
+    llm = _CoreLLM("今天小林和淑芬之间像是达成了某种默契。")
+    out = build_player_reports_for_games(repo, llm=llm)
+    assert llm.calls == 1
+    assert "今日小结:今天小林和淑芬之间像是达成了某种默契。" in out
+    # 不传 llm 则退回纯规则渲染,不调用 LLM、不出现"今日小结"
+    llm2 = _CoreLLM("不该被调用")
+    out2 = build_player_reports_for_games(repo)
+    assert llm2.calls == 0
+    assert "今日小结" not in out2

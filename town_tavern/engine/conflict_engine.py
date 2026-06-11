@@ -570,11 +570,18 @@ def _decide_for_conflict(repo: Repository, game_id: str, day: int, conflict: Con
     )
 
 
-def tick_conflicts(repo: Repository, game_id: str, day: int) -> List[str]:
-    """每日推进所有未落槌冲突一格(录音交易 + 账本摊牌)。返回可读摘要行。"""
+def tick_conflicts(
+    repo: Repository, game_id: str, day: int, allow_new: bool = True
+) -> List[str]:
+    """每日推进所有未落槌冲突一格(录音交易 + 账本摊牌)。返回可读摘要行。
+
+    allow_new=False(P0:awaiting_player 封顶)时不再【新建】主线冲突,但已存在的
+    未落槌冲突仍照常推进、可落槌——世界停在爆点不再加码,而非把残局也冻住。
+    """
     lines: List[str] = []
-    ensure_deal_recording_conflict(repo, game_id, day)
-    ensure_boss_sister_ledger_conflict(repo, game_id, day)
+    if allow_new:
+        ensure_deal_recording_conflict(repo, game_id, day)
+        ensure_boss_sister_ledger_conflict(repo, game_id, day)
 
     for conflict in repo.get_active_conflicts(game_id):
         label = "账本摊牌" if conflict.kind == BOSS_SISTER_LEDGER else "录音交易"
