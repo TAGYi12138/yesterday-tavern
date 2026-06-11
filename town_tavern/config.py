@@ -219,6 +219,21 @@ DEBT_PLATFORM = DEBT_CRITICAL
 STAGE_HYSTERESIS = int(os.environ.get("STAGE_HYSTERESIS", "8"))
 
 # ---------------------------------------------------------------------------
+# P0:无人值守封顶 / 等待玩家介入(world_phase = running / awaiting_player)
+# ---------------------------------------------------------------------------
+# 世界自动演化到"高压临界"或"玩家长期缺席"后,进入 awaiting_player:停止自动推进核心
+# 冲突/危机升级/继续堆压,只留低强度日常,把世界"停在爆点等玩家推门进来"。
+# 临界判定:真相压力绷到平台 且 全局紧张度达到此阈值(或债务已到 seizing)。
+AWAIT_PLAYER_TENSION = int(os.environ.get("AWAIT_PLAYER_TENSION", "80"))
+# 玩家缺席判定:距上次玩家行动超过此天数即视为长期无人值守,进入 awaiting_player。
+AWAIT_PLAYER_IDLE_DAYS = int(os.environ.get("AWAIT_PLAYER_IDLE_DAYS", "12"))
+# P1:债务终局倒计时——债务到 seizing(濒临卖店)后,自动演化只再走这么多天就停在
+# "酒馆将被接管"的最后一天等玩家介入(玩家未介入则不会真正落槌,留作可结算残局)。
+DEBT_SEIZE_COUNTDOWN_DAYS = int(os.environ.get("DEBT_SEIZE_COUNTDOWN_DAYS", "3"))
+# P3:NPC 压力饱和阈值——压力达到此值即落一个 mental_state,使"压力满"改变行为。
+NPC_SATURATION_STRESS = int(os.environ.get("NPC_SATURATION_STRESS", "95"))
+
+# ---------------------------------------------------------------------------
 # 引擎 C(C1):真相压力(truth_pressure)
 # ---------------------------------------------------------------------------
 # NPC 自运行【只能】累积 truth_pressure(局势压力),用于驱动危机阶段;
@@ -243,6 +258,9 @@ DAEMON_AUTO_CREATE = os.environ.get("DAEMON_AUTO_CREATE", "1") not in ("0", "fal
 # ---------------------------------------------------------------------------
 # 总开关。授权码等敏感信息只放 .env,绝不写进代码仓库。
 EMAIL_ENABLED = os.environ.get("EMAIL_ENABLED", "0") not in ("0", "false", "False")
+# P2:汇报/导出的【玩家视角】是否走 #5「事件核」二次渲染(LLM 把动作流水压成剧情核)。
+# 默认开启;每局每封报告多一次 LLM 调用,可设 0 关闭退回纯规则渲染。
+REPORT_USE_LLM = os.environ.get("REPORT_USE_LLM", "1") not in ("0", "false", "False")
 # QQ 邮箱 SMTP(SSL)固定参数
 EMAIL_SMTP_HOST = os.environ.get("EMAIL_SMTP_HOST", "smtp.qq.com")
 EMAIL_SMTP_PORT = int(os.environ.get("EMAIL_SMTP_PORT", "465"))

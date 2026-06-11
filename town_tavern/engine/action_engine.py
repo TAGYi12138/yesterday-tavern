@@ -76,6 +76,9 @@ def handle_player_action(
 
     effects = _apply_impact(repo, game_id, action, impact, world.current_day)
 
+    # P0:打点玩家活跃天——用于无人值守封顶的"玩家缺席"判定;玩家一介入即退出 awaiting_player。
+    repo.set_world_value(game_id, "player_last_seen_day", world.current_day)
+
     # 结算玩家代价:扣行动点(此处必然成功,前面已校验)
     repo.spend_player_energy(game_id, cost)
     effects.extend(_settle_player_cost(repo, game_id, action))

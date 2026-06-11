@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 
 from .config import (
     DAEMON_AUTO_CREATE, DAEMON_TICK_SECONDS, EMAIL_ENABLED, EMAIL_INTERVAL_HOURS,
-    REAL_SECONDS_PER_DAY,
+    REAL_SECONDS_PER_DAY, REPORT_USE_LLM,
 )
 from .engine import world_engine
 from .engine.reporting import build_player_reports_for_games
@@ -56,14 +56,15 @@ def _interruptible_sleep(seconds: int) -> None:
         time.sleep(1)
 
 
-def _world_snapshot(repo: Repository) -> str:
+def _world_snapshot(repo: Repository, llm=None) -> str:
     """汇总所有存档的世界 + NPC 当前状态,作为邮件里的"现状快照"。
 
     #1:在开发者数值快照之上,先附一段【玩家视角】(接 build_player_report 玩家层),
     让汇报邮件也能看到"玩家进游戏会看到的样子",而不再只有 flag/数值的开发者视图。
+    P2:传入 llm 时,玩家视角再走一层 #5「事件核」二次渲染(把动作流水压成剧情核)。
     """
     lines = []
-    player_view = build_player_reports_for_games(repo)
+    player_view = build_player_reports_for_games(repo, llm=llm)
     if player_view and player_view != "(暂无存档)":
         lines.append("【玩家视角 · 你进酒馆会看到的样子】")
         lines.append(player_view)
@@ -77,12 +78,14 @@ def _world_snapshot(repo: Repository) -> str:
     return "\n".join(lines) if lines else "(暂无存档)"
 
 
-def _try_send_report(reporter: RunReporter, repo: Repository, force: bool = False) -> None:
+def _try_send_report(
+    reporter: RunReporter, repo: Repository, llm=None, force: bool = False
+) -> None:
     """到点(或强制)时发送一封运行汇报邮件;任何异常只记录,绝不影响演化。"""
     if not (force and reporter.enabled) and not reporter.due():
         return
     try:
-        sent = reporter.flush(state_summary=_world_snapshot(repo), force=force)
+        sent = reporter.flush(state_summary=_world_snapshot(repo, llm=llm), force=force)
         if sent:
             _log("已发送一封运行汇报邮件 ✉")
     except Exception as e:  # 邮件是旁路功能,失败不能拖垮守护进程
@@ -148,13 +151,13 @@ def run() -> None:
         except Exception as e:  # 单轮异常不应让守护进程崩溃
             _log(f"演化出错(已忽略,下轮重试):{e!r}")
 
-        # 到点则发送一封运行汇报邮件
-        _try_send_report(reporter, repo)
+        # 到点则发送一封运行汇报邮件(P2:玩家视角走事件核二次渲染)
+        _try_send_report(reporter, repo, llm=llm if REPORT_USE_LLM else None)
 
         _interruptible_sleep(DAEMON_TICK_SECONDS)
 
     # 退出前若本周期还有未发送的内容,补发最后一封,免得丢失尾段进展
-    _try_send_report(reporter, repo, force=True)
+    _try_send_report(reporter, repo, llm=llm if REPORT_USE_LLM else None, force=True)
     _log("已优雅退出。")
 
 

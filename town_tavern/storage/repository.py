@@ -170,6 +170,7 @@ class Repository:
             stress=row["stress"], money=row["money"],
             status=row["status"] if "status" in keys else "active",
             status_until_day=row["status_until_day"] if "status_until_day" in keys else 0,
+            mental_state=row["mental_state"] if "mental_state" in keys else "",
         )
 
     def get_present_npcs(self, game_id: str) -> List[NPC]:
@@ -220,6 +221,14 @@ class Repository:
         self.conn.execute(
             "UPDATE npcs SET stress = ? WHERE game_id = ? AND id = ?",
             (new_stress, game_id, npc_id),
+        )
+        self.conn.commit()
+
+    def set_npc_mental_state(self, game_id: str, npc_id: str, mental_state: str) -> None:
+        """P3:设置某 NPC 的心理状态(空串=清除/恢复正常)。"""
+        self.conn.execute(
+            "UPDATE npcs SET mental_state = ? WHERE game_id = ? AND id = ?",
+            (mental_state, game_id, npc_id),
         )
         self.conn.commit()
 
@@ -675,6 +684,9 @@ class Repository:
             exposure_stage_days=_int("exposure_stage_days", 0),
             crisis_days=_int("crisis_days", 0),
             crisis_phase=_str("crisis_phase", "none"),
+            world_phase=_str("world_phase", "running"),
+            player_last_seen_day=_int("player_last_seen_day", 0),
+            debt_seize_countdown=_int("debt_seize_countdown", -1),
         )
 
     def add_boss_debt(self, game_id: str, delta: int) -> int:
