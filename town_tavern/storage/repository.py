@@ -501,6 +501,69 @@ class Repository:
         )
 
     # ------------------------------------------------------------------
+    # 观察器时间线(逐条消息流,供只读前端渲染)
+    # ------------------------------------------------------------------
+    def add_timeline_message(
+        self, game_id: str, day: int, type: str, text: str,
+        speaker_id: Optional[str] = None, speaker_name: Optional[str] = None,
+        target_id: Optional[str] = None, target_name: Optional[str] = None,
+        visibility: str = "public", debug_payload: Optional[dict] = None,
+        tick: int = 0,
+    ) -> int:
+        """落一条观察器时间线消息(微信群聊式)。
+
+        type:dialogue/narration/system/crisis/clue/reflection 等。
+        visibility:public 玩家可见;private 仅 debug 模式可见。
+        debug_payload:数值/状态机等,序列化为 JSON;玩家模式不下发。
+        """
+        cur = self.conn.execute(
+            """
+            INSERT INTO timeline_messages
+                (game_id, day, tick, type, speaker_id, speaker_name,
+                 target_id, target_name, text, visibility, debug_payload)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                game_id, day, tick, type, speaker_id, speaker_name,
+                target_id, target_name, text, visibility,
+                json.dumps(debug_payload, ensure_ascii=False) if debug_payload else None,
+            ),
+        )
+        self.conn.commit()
+        return cur.lastrowid
+
+    def get_timeline_messages(
+        self, game_id: str, after_id: int = 0, mode: str = "player",
+        limit: int = 300,
+    ) -> List[dict]:
+        """按发生顺序取时间线消息(id 递增),供观察器拉取与增量轮询。
+
+        mode="player":只返回 visibility='public' 的行,且【不下发】debug_payload;
+        mode="debug":返回全部行,并展开 debug_payload。
+        after_id:只取 id 大于该值的新消息(增量),默认 0 取全部。
+        """
+        sql = "SELECT * FROM timeline_messages WHERE game_id = ? AND id > ?"
+        params: list = [game_id, after_id]
+        if mode != "debug":
+            sql += " AND visibility = 'public'"
+        sql += " ORDER BY id ASC LIMIT ?"
+        params.append(limit)
+        rows = self.conn.execute(sql, params).fetchall()
+        out: List[dict] = []
+        for r in rows:
+            item = {
+                "id": r["id"], "day": r["day"], "tick": r["tick"],
+                "type": r["type"], "speaker_id": r["speaker_id"],
+                "speaker_name": r["speaker_name"], "target_id": r["target_id"],
+                "target_name": r["target_name"], "text": r["text"],
+                "visibility": r["visibility"],
+            }
+            if mode == "debug" and r["debug_payload"]:
+                item["debug_payload"] = json.loads(r["debug_payload"])
+            out.append(item)
+        return out
+
+    # ------------------------------------------------------------------
     # 冲突状态机(P0)
     # ------------------------------------------------------------------
     def get_conflict(self, game_id: str, conflict_id: str) -> Optional[Conflict]:
@@ -687,6 +750,7 @@ class Repository:
             world_phase=_str("world_phase", "running"),
             player_last_seen_day=_int("player_last_seen_day", 0),
             debt_seize_countdown=_int("debt_seize_countdown", -1),
+            debt_resolution=_str("debt_resolution", ""),
         )
 
     def add_boss_debt(self, game_id: str, delta: int) -> int:

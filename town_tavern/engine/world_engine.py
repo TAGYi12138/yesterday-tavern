@@ -25,10 +25,11 @@ from ..config import (
 )
 from ..llm.client import LLMClient
 from ..models.action import NPCIntention
-from ..models.event import Event, EventConsequences
+from ..models.event import Event, EventConsequences, EventType
 from ..models.memory import MemoryType
 from ..models.world import (
-    DEBT_STAGE_THRESHOLDS, EXPOSURE_STAGE_THRESHOLDS, TRUTH_STAGE_THRESHOLDS,
+    DEBT_RESOLUTIONS, DEBT_STAGE_THRESHOLDS, EXPOSURE_STAGE_THRESHOLDS,
+    TRUTH_STAGE_THRESHOLDS,
     WORLD_PHASE_AWAITING_PLAYER, WORLD_PHASE_RUNNING,
     WorldState, stage_of,
 )
@@ -77,6 +78,65 @@ def _format_consequences(event: Event, name_of: dict) -> List[str]:
     return lines
 
 
+# 瑕疵①:awaiting_player 降级日的低强度氛围拍子(确定性、零 LLM、不写记忆)。
+# 只描写"盯梢/等待/没动静"等可观察氛围,不引入任何新主线、不堆压力。
+_AWAITING_BEATS = [
+    "酒馆里没什么动静,几个人各自坐着,谁也没先开口。",
+    "门口有人探了探头又缩了回去,屋里几人交换了一个眼神,谁也没说话。",
+    "灶上的水烧开又凉了,没人去续。今天像是都在等着什么。",
+    "有人压低声音咕哝了一句,很快又噤了声,没传开。",
+    "雨一直没落下来,空气闷着。几人时不时瞟一眼门口,像在等谁推门进来。",
+]
+
+
+def _run_awaiting_player_day(
+    repo: Repository, game_id: str, new_day: int,
+    _p: Callable[[str], None],
+) -> Event:
+    """瑕疵①(方案B):awaiting_player 状态下的"低强度氛围日"。
+
+    刻意【不】跑社交生成 / 反思 / 记忆压缩,只:
+      - 落一条确定性的氛围拍子(公开事件 + 观察器时间线),让世界"还在微动";
+      - 让已有冲突继续落槌、危机余波自然散去、债务终局倒计时推进(均不再升级/堆压);
+      - 自然衰减(_daily_world_tick),但不写任何新记忆。
+    这样世界"定格在爆点等玩家",而非无限堆事件与记忆。
+    """
+    _p(f"第{new_day}天 · [世界·封顶] 局势停在爆点,只余低强度的等待与盯梢……")
+
+    beat = _AWAITING_BEATS[new_day % len(_AWAITING_BEATS)]
+    event = Event(
+        day=new_day, type=EventType.DAILY_LIFE,
+        title=f"第{new_day}天 · 静待", summary=beat,
+        actors=[], consequences=EventConsequences(), visibility="public",
+    )
+    event.id = repo.add_event(game_id, event)
+    repo.add_timeline_message(
+        game_id, new_day, type="narration", text=beat, visibility="public",
+    )
+
+    # 已有冲突继续落槌(不新建);危机余波自然收尾;债务终局倒计时;压力心理状态维护。
+    for line in conflict_engine.tick_conflicts(repo, game_id, new_day, allow_new=False):
+        _p("  " + line)
+    for line in crisis_engine.tick_crisis(repo, game_id, new_day):
+        _p("  " + line)
+    for line in crisis_engine.tick_crisis_phase(repo, game_id, new_day):
+        _p("  " + line)
+    for line in tick_debt_endgame(repo, game_id, new_day):
+        _p("  " + line)
+        repo.add_timeline_message(
+            game_id, new_day, type="system", text=line, visibility="public",
+        )
+    for line in npc_engine.update_mental_states(repo, game_id):
+        _p("  " + line)
+
+    # 仅自然衰减(债务利息已封顶、紧张度自然回落),不写任何新记忆。
+    _daily_world_tick(repo, game_id)
+
+    repo.increment_day(game_id)
+    repo.reset_player_day(game_id)
+    return event
+
+
 def advance_day(
     repo: Repository,
     llm: LLMClient,
@@ -104,6 +164,12 @@ def advance_day(
     revived = repo.expire_npc_statuses(game_id, new_day)
     for rid in revived:
         _p(f"  · {name_of.get(rid, rid)} 重新露面了。")
+
+    # Step 0c(瑕疵①·封顶降级):若世界已处于 awaiting_player(上一天已烧到临界/玩家长期
+    # 缺席),则【不再】跑完整社交日 + 反思 + 记忆压缩——只走一条低强度氛围拍子(盯梢/等待),
+    # 让世界"定格在爆点"而非继续堆事件/记忆。等玩家介入打点后,下一天自然恢复正常推进。
+    if repo.get_world_state(game_id).is_awaiting_player():
+        return _run_awaiting_player_day(repo, game_id, new_day, _p)
 
     # Step 1~5: 生成当日事件(三选一模式),并落地后果与记忆。
     if CONVERSATION_MODE:
@@ -260,6 +326,10 @@ def tick_debt_endgame(repo: Repository, game_id: str, day: int) -> List[str]:
     world = repo.get_world_state(game_id)
     lines: List[str] = []
 
+    # 瑕疵②:已被玩家结算(RESOLVED_*)则终局已定,倒计时不再推进。
+    if world.debt_resolution:
+        return lines
+
     if world.debt_stage != "seizing":
         if world.debt_seize_countdown >= 0:
             repo.set_world_value(game_id, "debt_seize_countdown", -1)
@@ -284,6 +354,20 @@ def tick_debt_endgame(repo: Repository, game_id: str, day: int) -> List[str]:
     repo.set_world_value(game_id, "debt_seize_countdown", new_cd)
     lines.append(f"[债务·终局] 接管倒计时还剩 {new_cd} 天,阿财六神无主,四处求人。")
     return lines
+
+
+def resolve_debt_endgame(repo: Repository, game_id: str, outcome: str) -> str:
+    """瑕疵②:由玩家行动落定债务终局(还债 / 放弃被接管 / 举报换转圜)。
+
+    供未来"玩家输入系统"接入——在 seizing 冻结期由玩家的具体动作调用,把终态写入
+    debt_resolution 并清掉倒计时。当前无人值守阶段不会自动触发(世界停在门口等玩家)。
+    返回落定的终态;outcome 非法则抛 ValueError。
+    """
+    if outcome not in DEBT_RESOLUTIONS:
+        raise ValueError(f"非法债务终局结果:{outcome}")
+    repo.set_world_value(game_id, "debt_resolution", outcome)
+    repo.set_world_value(game_id, "debt_seize_countdown", -1)
+    return outcome
 
 
 def _daily_world_tick(repo: Repository, game_id: str) -> None:

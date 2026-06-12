@@ -17,6 +17,12 @@ from ..config import (
 WORLD_PHASE_RUNNING = "running"
 WORLD_PHASE_AWAITING_PLAYER = "awaiting_player"
 
+# 瑕疵②:债务终局结算结果(玩家介入决定酒馆命运;空串=尚未结算,仍在 seizing 倒计时冻结中)。
+DEBT_RESOLVED_PAID = "RESOLVED_PAID"        # 玩家筹钱/还债保住酒馆
+DEBT_RESOLVED_SEIZED = "RESOLVED_SEIZED"    # 玩家放弃,酒馆被接管/查封
+DEBT_RESOLVED_EXPOSED = "RESOLVED_EXPOSED"  # 玩家举报老陈等,以揭发换取转圜
+DEBT_RESOLUTIONS = {DEBT_RESOLVED_PAID, DEBT_RESOLVED_SEIZED, DEBT_RESOLVED_EXPOSED}
+
 # 真相压力阶段(C1):latent(潜伏)→ stirring(暗涌)→ closing_in(逼近)→ boiling(沸点)
 # 仅由 NPC 自运行累积,用于加剧危机局势;不代表玩家已揭开真相。
 TRUTH_STAGE_THRESHOLDS = [
@@ -107,6 +113,8 @@ class WorldState(BaseModel):
     player_last_seen_day: int = Field(default=0, description="玩家上次行动的游戏天")
     # P1:债务终局倒计时——债务到 seizing 后剩余天数;归零即停在"酒馆将被接管"的最后一天等玩家。
     debt_seize_countdown: int = Field(default=-1, description="债务接管倒计时剩余天数(-1=未启动)")
+    # 瑕疵②:债务终局结算结果——空=未结算(仍冻结等玩家);RESOLVED_PAID/SEIZED/EXPOSED 之一=已落定。
+    debt_resolution: str = Field(default="", description="债务终局结果(空=未结算)")
 
     def tension_target(self) -> int:
         """PR6:按当前三条态势【阶段】算出全局紧张度的"目标档位"(0-100)。
