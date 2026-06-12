@@ -217,6 +217,34 @@ def build_player_reports_for_games(
     return "\n".join(blocks).rstrip()
 
 
+def build_player_report_min(repo: Repository, game_id: str, day: int, llm=None) -> str:
+    """瑕疵③:最精简版玩家报告——只给一句"今天的核心" + 谁没来,隐藏一切 debug 信息。
+
+    与 build_player_report 同一可见边界(无系统术语/flag/状态机/英文 id/私密事件),
+    但更克制:不逐条铺神态/关系体感,只压成"标题 + 一句事件核 + 缺席名单"。
+    传入 llm 时用事件核;否则退回当天首条公开事件;都没有则"一切如常"。
+    """
+    npcs = repo.get_all_npcs(game_id)
+    name_of = {n.id: n.name for n in npcs}
+    lines = [f"【第{day}天】"]
+
+    public_events = repo.get_events_in_range(game_id, day, day, only_public=True)
+    observable = [_humanize_ids(ev.summary, name_of) for ev in public_events if ev.summary]
+
+    core = _render_event_core(llm, day, observable) if llm is not None else ""
+    if core:
+        lines.append(core)
+    elif observable:
+        lines.append(observable[0])
+    else:
+        lines.append("酒馆里一切如常,没什么特别的动静。")
+
+    absent = [n.name for n in npcs if not n.is_present()]
+    if absent:
+        lines.append("今天没来:" + "、".join(absent) + "。")
+    return "\n".join(lines)
+
+
 # 主导维度 → 玩家可感知的"神态"措辞(不带任何数值/系统词)。
 _FEEL_PHRASES = {
     ("trust", 1): "{a}看起来比以前更信得过{b}了。",

@@ -3,6 +3,7 @@
 # 常用命令:
 #   docker compose up -d --build daemon   # 后台启动"自动演化守护进程"
 #   docker compose logs -f daemon         # 实时查看世界每天发生了什么
+#   docker compose up -d --build observer # 启动"微信群聊式观察器"前端(浏览器开 http://localhost:8000)
 #   docker compose run --rm cli           # 进入交互式 CLI 把玩(与守护共享同一存档库)
 #   docker compose down                   # 停止(存档保留在命名卷 tavern-data)
 #
@@ -29,6 +30,25 @@ services:
       - ./town_tavern:/app/town_tavern
     # 不随系统/Docker 自启:必须由你手动 `docker compose up -d daemon` 才会跑,
     # 避免后台无人值守时持续自动调用 API。停止后不会自动复活。
+    restart: "no"
+
+  # 观察器只读前端:微信群聊式三栏界面,实时观察世界自演(读同一存档卷,不写数据)
+  observer:
+    build: .
+    image: yesterday-tavern
+    container_name: yesterday-tavern-observer
+    env_file:
+      - .env
+    environment:
+      - TOWN_TAVERN_DB=/data/town_tavern.db
+      - OBSERVER_HOST=0.0.0.0
+      - OBSERVER_PORT=8000
+    ports:
+      - "8000:8000"          # 浏览器访问 http://localhost:8000
+    volumes:
+      - tavern-data:/data
+      - ./town_tavern:/app/town_tavern
+    command: ["python", "-m", "town_tavern.web.server"]
     restart: "no"
 
   # 交互式 CLI:按需 `docker compose run --rm cli` 启动,共享同一存档卷

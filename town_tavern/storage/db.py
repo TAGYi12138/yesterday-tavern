@@ -178,6 +178,35 @@ def init_db(conn: sqlite3.Connection) -> None:
         """
     )
 
+    # 前端观察器专用:逐条消息流(微信群聊式时间线)。
+    # events 表是"每日纪事"粒度,不适合做逐句群聊;这里按【发生顺序】落每条对话/旁白/
+    # 系统提示,供只读观察器直接渲染,无需再解析 events.summary。
+    # visibility=public 玩家可见;private(反思/私密记忆/系统行)仅 debug 模式可见。
+    # debug_payload 存 JSON(数值/状态机等),玩家模式不下发,debug 模式才展开。
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS timeline_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            game_id TEXT NOT NULL,
+            day INTEGER NOT NULL,
+            tick INTEGER DEFAULT 0,
+            type TEXT NOT NULL,
+            speaker_id TEXT,
+            speaker_name TEXT,
+            target_id TEXT,
+            target_name TEXT,
+            text TEXT NOT NULL,
+            visibility TEXT DEFAULT 'public',
+            debug_payload TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_timeline_game_id "
+        "ON timeline_messages (game_id, id)"
+    )
+
     _migrate(conn)
     conn.commit()
 

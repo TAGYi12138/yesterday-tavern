@@ -1,3 +1,4 @@
 # 开发/测试依赖(运行期依赖见 requirements.txt)
 -r requirements.txt
 pytest>=8,<10
+httpx>=0.27,<1.0        # FastAPI TestClient 依赖,用于观察器 API 单测

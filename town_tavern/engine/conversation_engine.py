@@ -327,6 +327,26 @@ def _apply_talk(
             emotional_tag=last_memory_write.emotional_tag, related_npc=asker_id,
         )
 
+    # 观察器时间线:把本场逐句台词按发生顺序落成群聊消息(供只读前端直接渲染)。
+    # 对话内容标 public(观察器里玩家也能看到这场对话);神态另起一条旁白。
+    for is_asker, text in turns:
+        if not (text or "").strip():
+            continue
+        sid, sname = (asker_id, asker_name) if is_asker else (target_id, target_name)
+        tid, tname = (target_id, target_name) if is_asker else (asker_id, asker_name)
+        repo.add_timeline_message(
+            game_id, day, type="dialogue", text=text.strip(),
+            speaker_id=sid, speaker_name=sname, target_id=tid, target_name=tname,
+            visibility="public", tick=turns_done,
+        )
+    if last_reply.visible_reaction:
+        repo.add_timeline_message(
+            game_id, day, type="narration",
+            text=f"{target_name}神态:{last_reply.visible_reaction}",
+            speaker_id=target_id, speaker_name=target_name,
+            visibility="public", tick=turns_done,
+        )
+
     talk_word = f"聊了几个回合(共{turns_done}轮)" if turns_done > 1 else "说话"
     return (
         f"{asker_name}主动找{target_name}{talk_word},"
@@ -385,6 +405,13 @@ def _apply_solo(
         content=f"我今天独自{_SOLO_HINT[verb]}:{narration}"
         + (f"(我发现:{discovery})" if discovery else ""),
         mtype=MemoryType.SYSTEM_EVENT, importance=62,
+    )
+
+    # 观察器时间线:独自行动落一条旁白(只含可观察行为,不含结果/发现)。
+    repo.add_timeline_message(
+        game_id, day, type="narration",
+        text=f"{actor_name}独自{_SOLO_HINT[verb]}。",
+        speaker_id=actor_id, speaker_name=actor_name, visibility="public",
     )
 
     if on_progress is not None:
