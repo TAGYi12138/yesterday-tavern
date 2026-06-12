@@ -42,9 +42,11 @@ services:
     environment:
       - TOWN_TAVERN_DB=/data/town_tavern.db
       - OBSERVER_HOST=0.0.0.0
-      - OBSERVER_PORT=8000
+      # 端口在 .env 里设 OBSERVER_PORT 即可自定义(留空默认 8000)。
+      - OBSERVER_PORT=${OBSERVER_PORT:-8000}
     ports:
-      - "8000:8000"          # 浏览器访问 http://localhost:8000
+      # 宿主机:容器端口都跟随 OBSERVER_PORT;浏览器访问 http://localhost:${OBSERVER_PORT:-8000}
+      - "${OBSERVER_PORT:-8000}:${OBSERVER_PORT:-8000}"
     volumes:
       - tavern-data:/data
       - ./town_tavern:/app/town_tavern
