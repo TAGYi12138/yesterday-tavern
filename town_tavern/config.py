@@ -271,3 +271,10 @@ EMAIL_AUTH_CODE = os.environ.get("EMAIL_AUTH_CODE", "")
 EMAIL_TO = os.environ.get("EMAIL_TO", "")
 # 汇报间隔(小时):每隔多久发送一封运行汇报。默认 1 小时,可在 .env 自行调整。
 EMAIL_INTERVAL_HOURS = float(os.environ.get("EMAIL_INTERVAL_HOURS", "1"))
+
+# ---------------------------------------------------------------------------
+# 观察器只读前端(FastAPI)监听地址
+# ---------------------------------------------------------------------------
+# 在这里改默认值即可自定义端口/host;也可用环境变量 OBSERVER_HOST / OBSERVER_PORT 覆盖。
+OBSERVER_HOST = os.environ.get("OBSERVER_HOST", "0.0.0.0")
+OBSERVER_PORT = int(os.environ.get("OBSERVER_PORT", "8000"))

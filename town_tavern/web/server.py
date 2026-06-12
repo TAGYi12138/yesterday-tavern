@@ -174,14 +174,16 @@ if _STATIC_DIR.exists():
 
 
 def main() -> None:
-    """本地起服务:python -m town_tavern.web.server(默认 0.0.0.0:8000)。"""
-    import os
+    """本地起服务:python -m town_tavern.web.server。
 
+    监听地址在 config.py 的 OBSERVER_HOST / OBSERVER_PORT 配置(默认 0.0.0.0:8000),
+    也可用同名环境变量覆盖。
+    """
     import uvicorn
 
-    host = os.environ.get("OBSERVER_HOST", "0.0.0.0")
-    port = int(os.environ.get("OBSERVER_PORT", "8000"))
-    uvicorn.run(app, host=host, port=port)
+    from .. import config
+
+    uvicorn.run(app, host=config.OBSERVER_HOST, port=config.OBSERVER_PORT)
 
 
 if __name__ == "__main__":
