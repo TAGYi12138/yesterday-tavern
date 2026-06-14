@@ -11,6 +11,7 @@
 绝不含任何系统真相/flag/状态机;讨论的后果统一走 `conversation_engine._apply_consequences`,
 继承"绝不写 athou_truth_progress / player_known_clues"的红线。
 """
+import uuid
 from typing import Dict, List, Optional
 
 from ..config import (
@@ -20,7 +21,8 @@ from ..config import (
 from ..llm import prompts
 from ..llm.client import LLMClient
 from ..models.conversation import (
-    GroupDiscussionState, PRESSURING_INTENTS, SPEAK_INTENTS, SpeakIntent,
+    GroupDiscussionState, GroupUtterance, PRESSURING_INTENTS, SPEAK_INTENTS,
+    SpeakIntent,
 )
 from ..models.npc import NPC
 from ..storage.repository import Repository
@@ -188,3 +190,247 @@ def generate_speak_intent(
     intent.npc_id = npc.id  # 以程序为准,避免 LLM 把 npc_id 写错/写空
     intent.intent = normalize_intent(intent.intent)
     return intent
+
+
+# ---------------------------------------------------------------------------
+# 台词黑名单:台词里绝不能出现系统名词/状态机/隐藏真相的痕迹
+# ---------------------------------------------------------------------------
+_FORBIDDEN_TOKENS = (
+    "athou_truth_progress", "player_known_clues", "truth_pressure",
+    "exposure_stage", "exposure_risk", "global_tension", "debt_stage",
+    "world_phase", "flag_", "resolved_", "conflictstate", "_delta",
+)
+
+
+def contains_forbidden_token(text: str) -> bool:
+    """台词是否夹带了系统名词/状态机/flag 等不该被角色说出的内部痕迹。"""
+    low = (text or "").lower()
+    return any(tok in low for tok in _FORBIDDEN_TOKENS)
+
+
+def sanitize_utterance(text: str, max_len: int = 40) -> str:
+    """收口一句台词:超长截断到 max_len;若夹带系统名词则整句作废(返回空串)。
+
+    返回空串表示"这一句不可用",上层据此当作本轮没说成(计一次沉默),绝不外显脏台词。
+    """
+    t = (text or "").strip()
+    if not t:
+        return ""
+    if contains_forbidden_token(t):
+        return ""
+    return t[:max_len]
+
+
+# ---------------------------------------------------------------------------
+# 单句台词生成(LLM)
+# ---------------------------------------------------------------------------
+def generate_utterance_from_intent(
+    repo: Repository, llm: LLMClient, game_id: str, npc: NPC,
+    intent: SpeakIntent, state: GroupDiscussionState,
+) -> Optional[GroupUtterance]:
+    """让被仲裁选中的 npc 依据其意图说出【一句】具体台词(≤40 字,过黑名单)。"""
+    name_of = {n.id: n.name for n in repo.get_all_npcs(game_id)}
+    scene_text = prompts.group_scene_text(state, name_of)
+    target_name = name_of.get(intent.target, "")
+    recent = repo.get_recent_memories(game_id, npc.id)
+    longterm = repo.get_longterm_memories(game_id, npc.id)
+    world = repo.get_world_state(game_id)
+    system, user = prompts.build_group_utterance_prompt(
+        npc, scene_text, intent, target_name, recent, longterm, world
+    )
+    try:
+        utt = llm.chat_json(system, user, GroupUtterance)
+    except Exception:
+        return None
+    utt.speaker = npc.id  # 以程序为准
+    utt.intent = normalize_intent(utt.intent)
+    utt.text = sanitize_utterance(utt.text)
+    if not utt.text:
+        return None
+    return utt
+
+
+# ---------------------------------------------------------------------------
+# 收场判定(纯函数)
+# ---------------------------------------------------------------------------
+def should_end_discussion(state: GroupDiscussionState) -> bool:
+    """这场讨论是否该收场(任一条件满足即收)。纯函数,便于单测。
+
+    - 轮数到顶;或在场不足两人(都离场了);
+    - 连续多轮无人愿意开口(冷场);或现场热度烧到上限(再吵无益,见好就收)。
+    """
+    if state.rounds >= GROUP_MAX_ROUNDS:
+        if not state.end_reason:
+            state.end_reason = "max_rounds"
+        return True
+    if len(state.present()) < 2:
+        if not state.end_reason:
+            state.end_reason = "too_few_present"
+        return True
+    if state.silence_rounds >= GROUP_MAX_SILENCE_ROUNDS:
+        if not state.end_reason:
+            state.end_reason = "silence"
+        return True
+    if state.heat >= GROUP_HEAT_END_THRESHOLD:
+        if not state.end_reason:
+            state.end_reason = "too_heated"
+        return True
+    return False
+
+
+# 各意图对现场"热度"的贡献:逼问/威胁/抢话升温,求情/岔开降温。
+_HEAT_DELTA = {
+    "threaten": 22, "press": 16, "interrupt": 14, "deny": 10, "probe": 8,
+    "appeal": -4, "deflect": -2, "observe": 0, "silent": 0, "leave": 0,
+}
+
+
+def _heat_delta(intent: str) -> int:
+    return _HEAT_DELTA.get(normalize_intent(intent), 4)
+
+
+def _secret_involved_ids(repo: Repository, game_id: str) -> set:
+    """卷入"任一进行中冲突"的 NPC id 集合 —— 话头戳到他们更易接话(touches_secret)。"""
+    ids: set = set()
+    for c in repo.get_all_conflicts(game_id):
+        if not c.is_resolved():
+            ids.update(c.participants)
+    return ids
+
+
+def _gather_intents(llm: LLMClient, jobs: List[tuple]) -> List[Optional[SpeakIntent]]:
+    """并发执行一批意图生成调用(复用 conversation_engine 的并发器,受 CONV_CONCURRENCY 控)。
+
+    延迟导入 conversation_engine,避免与其形成 import 期循环依赖。
+    """
+    from .conversation_engine import _gather_json
+    return _gather_json(llm, jobs)
+
+
+# ---------------------------------------------------------------------------
+# 讨论主循环
+# ---------------------------------------------------------------------------
+def run_group_discussion(
+    repo: Repository,
+    llm: LLMClient,
+    game_id: str,
+    day: int,
+    participant_ids: List[str],
+    topic: str = "",
+    topic_owner: str = "",
+    location: str = "吧台",
+    on_progress=None,
+) -> Optional[GroupDiscussionState]:
+    """运行一场多人讨论,把逐句台词以同一 group_id 落 timeline,返回现场终态。
+
+    流程(每轮):在场各人各出一个 SpeakIntent(LLM·并发)→ 程序仲裁谁开口
+    → 选中者出一句台词(LLM)→ 落 timeline、更新现场。无人愿意开口/冷场/烧到顶即收场。
+    发言顺序由仲裁决定,**非固定 A/B/C 轮流**。返回 None 表示在场不足两人、未开成。
+    """
+    npcs = {n.id: n for n in repo.get_all_npcs(game_id)}
+    name_of = {nid: n.name for nid, n in npcs.items()}
+    present = [
+        pid for pid in participant_ids
+        if pid in npcs and npcs[pid].is_present()
+    ]
+    if len(present) < 2:
+        return None
+
+    group_id = "grp-" + uuid.uuid4().hex[:8]
+    state = GroupDiscussionState(
+        group_id=group_id, participants=list(present), location=location,
+        topic=topic, topic_owner=topic_owner,
+    )
+
+    def _p(msg: str) -> None:
+        if on_progress is not None:
+            on_progress(msg)
+
+    # 开场旁白(带 group_id + participants):让前端即便只有一句也能渲染出讨论块头。
+    present_names = "、".join(name_of[p] for p in present)
+    repo.add_timeline_message(
+        game_id, day, type="narration",
+        text=f"{present_names}在{location}围拢到一处,气氛有些僵。",
+        visibility="public", group_id=group_id, participants=list(present),
+        tick=0,
+    )
+    _p(f"  · 一场多人对峙在{location}拉开:{present_names}")
+
+    secret_ids = _secret_involved_ids(repo, game_id)
+
+    while not should_end_discussion(state):
+        state.rounds += 1
+        present_ids = state.present()
+        if len(present_ids) < 2:
+            break
+        scene_text = prompts.group_scene_text(state, name_of)
+        jobs = [
+            _intent_job(repo, game_id, npcs[pid], state, scene_text)
+            for pid in present_ids
+        ]
+        results = _gather_intents(llm, jobs)
+        intents: List[SpeakIntent] = []
+        for pid, res in zip(present_ids, results):
+            if res is None:
+                continue
+            res.npc_id = pid
+            res.intent = normalize_intent(res.intent)
+            intents.append(res)
+
+        ctx = {
+            it.npc_id: {
+                "stress": npcs[it.npc_id].stress,
+                "bias": personality_bias(npcs[it.npc_id]),
+                "touches_secret": it.npc_id in secret_ids,
+            }
+            for it in intents
+        }
+        speaker_id = choose_speaker(intents, state, ctx)
+        if speaker_id is None:
+            # 没人愿意开口:记一次冷场,够久就收场。
+            state.silence_rounds += 1
+            continue
+
+        chosen = next(it for it in intents if it.npc_id == speaker_id)
+        if chosen.intent == "leave":
+            state.left.append(speaker_id)
+            repo.add_timeline_message(
+                game_id, day, type="narration",
+                text=f"{name_of[speaker_id]}没再搭话,起身离开了。",
+                visibility="public", group_id=group_id,
+                participants=list(state.participants), tick=state.rounds,
+            )
+            _p(f"    · {name_of[speaker_id]} 离场")
+            continue
+
+        utt = generate_utterance_from_intent(
+            repo, llm, game_id, npcs[speaker_id], chosen, state
+        )
+        if utt is None:
+            state.silence_rounds += 1
+            continue
+
+        target_id = utt.target if utt.target in npcs else ""
+        repo.add_timeline_message(
+            game_id, day, type="dialogue", text=utt.text,
+            speaker_id=speaker_id, speaker_name=name_of[speaker_id],
+            target_id=target_id or None,
+            target_name=name_of.get(target_id) if target_id else None,
+            visibility="public", group_id=group_id,
+            participants=list(state.participants), tick=state.rounds,
+            debug_payload={"intent": utt.intent, "tone": utt.tone},
+        )
+        if utt.visible_reaction:
+            repo.add_timeline_message(
+                game_id, day, type="narration",
+                text=f"({name_of[speaker_id]}{utt.visible_reaction})",
+                visibility="public", group_id=group_id,
+                participants=list(state.participants), tick=state.rounds,
+            )
+        state.add_utterance(speaker_id, target_id, utt.text, utt.intent)
+        state.heat = min(100, state.heat + _heat_delta(utt.intent))
+        _p(f"    {name_of[speaker_id]}:{utt.text}")
+
+    if not state.end_reason:
+        state.end_reason = "max_rounds"
+    return state
