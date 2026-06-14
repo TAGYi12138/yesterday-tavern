@@ -508,25 +508,32 @@ class Repository:
         speaker_id: Optional[str] = None, speaker_name: Optional[str] = None,
         target_id: Optional[str] = None, target_name: Optional[str] = None,
         visibility: str = "public", debug_payload: Optional[dict] = None,
-        tick: int = 0,
+        tick: int = 0, group_id: Optional[str] = None,
+        participants: Optional[List[str]] = None,
     ) -> int:
         """落一条观察器时间线消息(微信群聊式)。
 
         type:dialogue/narration/system/crisis/clue/reflection 等。
         visibility:public 玩家可见;private 仅 debug 模式可见。
         debug_payload:数值/状态机等,序列化为 JSON;玩家模式不下发。
+        group_id/participants(多人讨论):同一场群聊的逐句消息共享 group_id;
+        participants 为该场在场者 npc_id 列表(JSON 数组存储),【两种模式都下发】,
+        供前端把连续同 group_id 的消息聚成讨论块并显示块头。
         """
         cur = self.conn.execute(
             """
             INSERT INTO timeline_messages
                 (game_id, day, tick, type, speaker_id, speaker_name,
-                 target_id, target_name, text, visibility, debug_payload)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 target_id, target_name, text, visibility, debug_payload,
+                 group_id, participants)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 game_id, day, tick, type, speaker_id, speaker_name,
                 target_id, target_name, text, visibility,
                 json.dumps(debug_payload, ensure_ascii=False) if debug_payload else None,
+                group_id,
+                json.dumps(participants, ensure_ascii=False) if participants else None,
             ),
         )
         self.conn.commit()
@@ -558,6 +565,11 @@ class Repository:
                 "target_name": r["target_name"], "text": r["text"],
                 "visibility": r["visibility"],
             }
+            # 多人讨论的分组字段:两种模式都下发(玩家也要看到讨论块头部)。
+            item["group_id"] = r["group_id"]
+            item["participants"] = (
+                json.loads(r["participants"]) if r["participants"] else None
+            )
             if mode == "debug" and r["debug_payload"]:
                 item["debug_payload"] = json.loads(r["debug_payload"])
             out.append(item)

@@ -183,6 +183,9 @@ def init_db(conn: sqlite3.Connection) -> None:
     # 系统提示,供只读观察器直接渲染,无需再解析 events.summary。
     # visibility=public 玩家可见;private(反思/私密记忆/系统行)仅 debug 模式可见。
     # debug_payload 存 JSON(数值/状态机等),玩家模式不下发,debug 模式才展开。
+    # group_id/participants(多人讨论):同一场群聊的逐句消息共享 group_id;
+    # participants 为该场在场者 npc_id 的 JSON 数组,【两种模式都下发】,供前端聚成
+    # 讨论块并显示块头(如『吧台·阿财、淑芬、小林』)。普通两人对话/旁白这两列为 NULL。
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS timeline_messages (
@@ -198,6 +201,8 @@ def init_db(conn: sqlite3.Connection) -> None:
             text TEXT NOT NULL,
             visibility TEXT DEFAULT 'public',
             debug_payload TEXT,
+            group_id TEXT,
+            participants TEXT,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
         """
@@ -225,3 +230,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
     # P3:压力饱和后的心理状态(reckless/paranoid/withdrawn/confession_ready),使"压力满"改变行为。
     if "mental_state" not in existing:
         conn.execute("ALTER TABLE npcs ADD COLUMN mental_state TEXT DEFAULT ''")
+
+    # 多人讨论:为已存在的 timeline_messages 老库补上分组列(老数据这两列为 NULL,不丢任何行)。
+    tl_existing = {r["name"] for r in conn.execute("PRAGMA table_info(timeline_messages)")}
+    if "group_id" not in tl_existing:
+        conn.execute("ALTER TABLE timeline_messages ADD COLUMN group_id TEXT")
+    if "participants" not in tl_existing:
+        conn.execute("ALTER TABLE timeline_messages ADD COLUMN participants TEXT")
