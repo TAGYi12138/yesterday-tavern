@@ -178,6 +178,8 @@ class GroupDiscussionState:
     topic_owner: str = ""                         # 话题主要牵涉到谁(npc_id)
     rounds: int = 0                               # 已进行的轮数
     recent_transcript: List[Tuple[str, str, str]] = field(default_factory=list)
+    # 全程实录(发言者, 对象, 内容, 意图):供讨论结束后写个人记忆/裁决后果,不喂回 prompt。
+    full_transcript: List[Tuple[str, str, str, str]] = field(default_factory=list)
     heat: int = 0                                 # 现场热度 0-100(越高越紧绷)
     silence_rounds: int = 0                       # 连续无人开口的轮数
     last_speaker: str = ""                        # 上一句发话者 npc_id
@@ -195,6 +197,7 @@ class GroupDiscussionState:
         """登记一句已发生的台词,更新 last_*/计数/沉默轮数(保留最近 6 句原话)。"""
         self.recent_transcript.append((speaker, target, text))
         self.recent_transcript = self.recent_transcript[-6:]
+        self.full_transcript.append((speaker, target, text, intent))
         self.last_speaker = speaker
         self.last_target = target
         self.last_intent = intent

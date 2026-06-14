@@ -24,6 +24,8 @@ from ..models.conversation import (
     GroupDiscussionState, GroupUtterance, PRESSURING_INTENTS, SPEAK_INTENTS,
     SpeakIntent,
 )
+from ..models.event import EventConsequences, RelationshipDelta, StressDelta
+from ..models.memory import MemoryType
 from ..models.npc import NPC
 from ..storage.repository import Repository
 
@@ -320,12 +322,15 @@ def run_group_discussion(
     topic_owner: str = "",
     location: str = "吧台",
     on_progress=None,
+    agg: Optional["EventConsequences"] = None,
 ) -> Optional[GroupDiscussionState]:
     """运行一场多人讨论,把逐句台词以同一 group_id 落 timeline,返回现场终态。
 
     流程(每轮):在场各人各出一个 SpeakIntent(LLM·并发)→ 程序仲裁谁开口
     → 选中者出一句台词(LLM)→ 落 timeline、更新现场。无人愿意开口/冷场/烧到顶即收场。
     发言顺序由仲裁决定,**非固定 A/B/C 轮流**。返回 None 表示在场不足两人、未开成。
+    讨论收场后写【参与者三层个人记忆 + 旁观者片段传闻】并裁决后果(继承真相红线)。
+    传入 agg 时,当日后果汇总累加进去(供调用方展示),否则内部自建一份丢弃。
     """
     npcs = {n.id: n for n in repo.get_all_npcs(game_id)}
     name_of = {nid: n.name for nid, n in npcs.items()}
@@ -433,4 +438,140 @@ def run_group_discussion(
 
     if not state.end_reason:
         state.end_reason = "max_rounds"
+
+    # 收场:写参与者三层个人记忆 + 旁观者片段传闻,并裁决后果(继承真相红线)。
+    apply_discussion_aftermath(repo, game_id, day, state, name_of, agg=agg)
     return state
+
+
+# ---------------------------------------------------------------------------
+# 讨论善后(PR-D):个人记忆(三层)+ 旁观者传闻(片段)+ 后果裁决(红线)
+# ---------------------------------------------------------------------------
+def _athou_keywords_hit(state: GroupDiscussionState) -> bool:
+    """这场讨论是否触及"阿土失踪"主线(仅据明面话头/台词关键词,不读系统真相)。"""
+    blob = state.topic + " " + " ".join(t for _, _, t, _ in state.full_transcript)
+    return any(k in blob for k in ("阿土", "失踪", "带子", "录音", "那天晚上", "真相"))
+
+
+def build_discussion_consequences(
+    state: GroupDiscussionState, secret_ids: Optional[set] = None,
+) -> "EventConsequences":
+    """据全程实录【纯程序地】裁出后果:关系增量 + 压力 + (触及主线时)真相压力增量。
+
+    施压/质问/威胁会让【被指向者】对发话者升起戒备;求情拉拢小幅增好感。现场越热,
+    在场者压力越涨。若话头触及阿土主线,给出正向 athou_progress_delta —— 它在
+    `_apply_consequences` 里【只转化为 truth_pressure】,绝不落地玩家真相进度(红线)。
+    """
+    from ..engine import event_engine
+    cons = EventConsequences()
+    # 关系:按 (被指向者 -> 发话者) 聚合各对抗/亲近增量。
+    pair: Dict[tuple, Dict[str, int]] = {}
+    for sp, tg, _text, intent in state.full_transcript:
+        if not tg or tg == sp:
+            continue
+        d = pair.setdefault((tg, sp), {
+            "trust": 0, "fear": 0, "resentment": 0, "affection": 0, "suspicion": 0,
+        })
+        if intent in PRESSURING_INTENTS:
+            d["suspicion"] += 3
+            d["resentment"] += 2
+            if intent == "threaten":
+                d["fear"] += 3
+        elif intent == "appeal":
+            d["affection"] += 2
+            d["trust"] += 1
+    for (frm, to), d in pair.items():
+        cons.relationships.append(RelationshipDelta(**{
+            "from": frm, "to": to,
+            "trust": event_engine._clamp(d["trust"], -8, 8),
+            "fear": event_engine._clamp(d["fear"], -8, 8),
+            "resentment": event_engine._clamp(d["resentment"], -8, 8),
+            "affection": event_engine._clamp(d["affection"], -8, 8),
+            "suspicion": event_engine._clamp(d["suspicion"], -8, 8),
+        }))
+    # 压力:现场越热,在场者越紧绷(轻量,统一小幅)。
+    stress_gain = min(8, state.heat // 20)
+    if stress_gain:
+        for pid in state.participants:
+            cons.stress.append(StressDelta(npc=pid, delta=stress_gain))
+    # 触及主线:给正向真相压力增量(红线:只进 truth_pressure,不进 athou_truth_progress)。
+    if _athou_keywords_hit(state):
+        cons.athou_progress_delta = 3
+    return cons
+
+
+def _participant_memory(
+    state: GroupDiscussionState, viewer_id: str, name_of: dict,
+) -> tuple:
+    """构造某参与者的三层个人记忆 (observed, interpretation, confidence)。
+
+    observed 是【这位参与者视角】的事实复述(自己说的话 vs 听见别人说的),因此各人不同;
+    interpretation/confidence 是其个人解读(随现场热度变化),不含任何系统真相。
+    """
+    mine = [t for sp, _tg, t, _ in state.full_transcript if sp == viewer_id]
+    heard = [
+        (name_of.get(sp, sp), t)
+        for sp, _tg, t, _ in state.full_transcript if sp != viewer_id
+    ]
+    parts = [f"在{state.location}的一场争执里"]
+    parts.append("我说了:" + "；".join(mine) if mine else "我没怎么开口")
+    if heard:
+        parts.append("听见 " + "；".join(f"{nm}说「{t}」" for nm, t in heard[:3]))
+    observed = "，".join(parts)
+    if state.heat >= 60:
+        interpretation = "这事没完,有人快绷不住了"
+        confidence = 65
+    elif state.heat >= 30:
+        interpretation = "话里有话,有人在遮掩什么"
+        confidence = 55
+    else:
+        interpretation = "场面还压得住,没谈出什么"
+        confidence = 45
+    return observed, interpretation, confidence
+
+
+def apply_discussion_aftermath(
+    repo: Repository, game_id: str, day: int, state: GroupDiscussionState,
+    name_of: Optional[dict] = None, agg: Optional["EventConsequences"] = None,
+) -> "EventConsequences":
+    """讨论收场后的统一善后:个人记忆 + 旁观者传闻 + 后果裁决(继承红线)。返回当日后果汇总。"""
+    from . import memory_engine
+    from .conversation_engine import _apply_consequences
+    if name_of is None:
+        name_of = {n.id: n.name for n in repo.get_all_npcs(game_id)}
+    if agg is None:
+        agg = EventConsequences()
+
+    # 没说成任何话(纯冷场)→ 不写记忆、不裁后果,免得凭空生成内容。
+    if not state.full_transcript:
+        return agg
+
+    # 1) 参与者各写一条【三层】个人记忆(observed 各人不同)。
+    for pid in state.participants:
+        observed, interpretation, confidence = _participant_memory(state, pid, name_of)
+        memory_engine.write_memory(
+            repo, game_id, pid, day, content=observed,
+            mtype=MemoryType.DIALOGUE, importance=58,
+            related_npc=state.topic_owner or None,
+            interpretation=interpretation, confidence=confidence,
+        )
+
+    # 2) 旁观者(在场但未参与讨论者)只得【片段传闻】:看见有人在争,听不清内容。
+    present_names = "、".join(name_of.get(p, p) for p in state.participants)
+    observer_ids = {
+        n.id for n in repo.get_all_npcs(game_id)
+        if n.is_present() and n.id not in state.participants
+    }
+    for nid in observer_ids:
+        memory_engine.write_memory(
+            repo, game_id, nid, day,
+            content=f"我瞧见{present_names}在{state.location}围着低声争执,没听清在说什么",
+            mtype=MemoryType.RUMOR, importance=28,
+        )
+
+    # 3) 后果裁决:走与对话同一个 _apply_consequences,继承"真相归玩家"红线
+    #    (athou_progress_delta 只转 truth_pressure,绝不写 athou_truth_progress)。
+    secret_ids = _secret_involved_ids(repo, game_id)
+    cons = build_discussion_consequences(state, secret_ids)
+    _apply_consequences(repo, game_id, cons, agg)
+    return agg
