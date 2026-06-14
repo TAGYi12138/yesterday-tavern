@@ -4,6 +4,7 @@
 """
 from typing import List, Optional
 
+from ..models.conversation import GroupDiscussionState, SpeakIntent
 from ..models.event import EventType
 from ..models.memory import Memory, parse_memory_content
 from ..models.npc import NPC
@@ -681,5 +682,120 @@ def build_reflection_prompt(
         "}\n"
         "区分事实与推测:observed 只放你确定的事,summary 放你的判断/猜测;"
         "不得引用你不可能知道的信息。"
+    )
+    return system, user
+
+
+# ===========================================================================
+# 6. 多人讨论(群聊):意图(SpeakIntent)+ 单句台词(GroupUtterance)
+# ===========================================================================
+def group_scene_text(state: GroupDiscussionState, name_of: dict) -> str:
+    """把一场讨论的【可观察现场】渲染成共享上下文(所有在场者都看得到的明面信息)。
+
+    只含:在场都有谁、话题、最近几句【原话】(谁→谁:说了什么)。绝不含任何
+    系统状态机/flag/隐藏真相——共享现场就是"在场的人都听得见的那些话"。
+    """
+    present = "、".join(name_of.get(p, p) for p in state.present())
+    lines = [f"【现场】此刻在『昨日酒馆·{state.location}』围着说话的有:{present}。"]
+    if state.topic:
+        lines.append(f"【眼下话头】{state.topic}")
+    if state.recent_transcript:
+        lines.append("【刚才几句你都听见了】")
+        for sp, tg, text in state.recent_transcript:
+            arrow = f"对{name_of.get(tg, tg)}" if tg else ""
+            lines.append(f"- {name_of.get(sp, sp)}{arrow}:{text}")
+    else:
+        lines.append("（还没人开口,场面有点僵。）")
+    return "\n".join(lines)
+
+
+def build_group_speak_intent_prompt(
+    npc: NPC,
+    scene_text: str,
+    others_text: str,
+    recent: List[Memory],
+    longterm: List[Memory],
+    world: WorldState,
+    conflict_brief: str = "",
+) -> tuple[str, str]:
+    """构造"此刻你想不想接话、想怎么接"的 (system, user) prompt。返回 SpeakIntent。
+
+    只给共享现场 + 你自己的记忆/关系/状态(知识隔离),不含任何系统真相。
+    你只表达【意图】(想不想说、多迫切、什么角度、对谁),不写具体台词。
+    """
+    system = (
+        f"{GUARDRAIL}\n\n"
+        f"你正在『昨日酒馆』里和另外几个人围着说话。这一轮,你要先掂量:\n"
+        f"{npc.fixed_profile_text()}\n\n"
+        "你只能依据【你自己知道的事】(你的记忆、目标、你亲耳听到的现场话)来掂量,"
+        "不知道别人私下都在想什么。现在【只表态你的发言意愿】,不要写具体台词。"
+    )
+    conflict_block = (
+        f"【你当前感知到的局面】\n{conflict_brief}\n\n" if conflict_brief else ""
+    )
+    user = (
+        f"{scene_text}\n\n"
+        f"【你此刻的状态】压力:{npc.stress}/100,当前目标:{npc.current_goal}\n"
+        f"{_mental_block(npc)}"
+        f"{conflict_block}"
+        f"【在场各人(附你对他的关系,据此判断该亲近/试探/防备谁)】\n{others_text}\n\n"
+        f"{_memories_text(recent, longterm)}\n\n"
+        "掂量一下这一轮你想不想开口、有多迫切,输出 JSON:\n"
+        "{\n"
+        f'  "npc_id": "{npc.id}",\n'
+        '  "wants_to_speak": true/false,\n'
+        '  "urgency": 0-100(你有多急着开口),\n'
+        '  "intent": "press(逼问)/probe(试探)/deflect(岔开)/deny(否认)/'
+        'threaten(威胁)/appeal(求情拉拢)/interrupt(抢话打断)/observe(只看不说)/'
+        'silent(沉默)/leave(想离场)之一",\n'
+        '  "target": "你想对谁说(上面列出的 id);没有明确对象就留空",\n'
+        '  "speech_angle": "你打算从哪个角度切入(一句话,别写台词原文)",\n'
+        '  "private_reason": "你为什么想这么做(引用你的记忆/目标,只给自己看)",\n'
+        '  "should_interrupt": true/false(是否想打断刚才那句抢着说)\n'
+        "}\n"
+        "被点名/被质问/话头戳到你的痛处时更该接话;无话可说或不愿沾身就 observe/silent。"
+    )
+    return system, user
+
+
+def build_group_utterance_prompt(
+    npc: NPC,
+    scene_text: str,
+    intent: SpeakIntent,
+    target_name: str,
+    recent: List[Memory],
+    longterm: List[Memory],
+    world: WorldState,
+) -> tuple[str, str]:
+    """构造"被选中者这一句要说什么"的 (system, user) prompt。返回 GroupUtterance。
+
+    铁律同两人对话:只为自己说、不替别人写反应、不说自己不可能知道的真相、不引用任何
+    系统名词(flag/进度/状态机)。台词≤40字,口语、有动机。
+    """
+    angle = f"(你想走的角度:{intent.speech_angle})" if intent.speech_angle else ""
+    to_who = f"主要说给 {target_name}" if target_name else "对着在场的人"
+    system = (
+        f"{GUARDRAIL}\n\n"
+        f"你正在『昨日酒馆』里和另外几个人当面说话,现在轮到你开口。\n"
+        f"{npc.fixed_profile_text()}\n\n"
+        "【铁律】你只为【你自己】说话,绝不替别人写台词或反应;不说你不可能知道的内情;"
+        "不得提任何系统名词或数值。说一句口语化的话即可,别长篇大论。"
+    )
+    user = (
+        f"{scene_text}\n\n"
+        f"【你此刻的状态】压力:{npc.stress}/100,当前目标:{npc.current_goal}\n"
+        f"{_mental_block(npc)}"
+        f"{_memories_text(recent, longterm)}\n\n"
+        f"【你这一句的打算】{to_who},意图是 {intent.intent}{angle}。\n\n"
+        "把这句话说出来,输出 JSON:\n"
+        "{\n"
+        f'  "speaker": "{npc.id}",\n'
+        f'  "target": "{intent.target}",\n'
+        '  "text": "你这一句台词,自然中文,40字以内",\n'
+        '  "tone": "语气,如 冷硬/试探/急切/陪笑",\n'
+        f'  "intent": "{intent.intent}",\n'
+        '  "visible_reaction": "旁人能看到的你的神态/动作,如 别开脸/逼近一步"\n'
+        "}\n"
+        "话要短、要像真人脱口而出;只透露你愿意当众说的,留有余地。"
     )
     return system, user
