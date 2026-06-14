@@ -42,6 +42,12 @@
   .msg.narration .bub { background:transparent; color:var(--muted); font-style:italic; font-size:13px; }
   .msg.system .bub { background:#2a2410; color:var(--accent); font-size:13px; }
   .msg.crisis .bub { background:#3a1515; color:#ff9b9b; }
+  /* 多人讨论:把同一 group_id 的消息裹成一个群聊块。 */
+  .groupblock { border:1px solid #33405e; border-radius:12px; margin:12px 0; padding:8px 10px 10px;
+                background:linear-gradient(180deg,#141a26,#12151c); }
+  .groupblock > .ghead { font-size:12px; color:#9ab0e0; margin:2px 2px 8px; display:flex; gap:8px; align-items:center; }
+  .groupblock > .ghead .gtag { background:#1d2740; color:#9ab0e0; border-radius:9px; padding:1px 8px; font-size:11px; }
+  .groupblock .msg { max-width:100%; }
   .daysep { text-align:center; color:var(--muted); font-size:12px; margin:14px 0 6px; }
   .daysep span { background:#0d0f13; padding:2px 12px; border:1px solid var(--line); border-radius:12px; }
   .dbg { font-size:11px; color:#6f7686; margin-top:4px; font-family:monospace; }

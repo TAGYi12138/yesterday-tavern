@@ -30,7 +30,10 @@ from ..models.event import (
 )
 from ..models.memory import MemoryType
 from ..storage.repository import Repository
-from . import conflict_engine, event_engine, memory_engine, relationship_engine
+from . import (
+    conflict_engine, event_engine, group_engine, memory_engine,
+    relationship_engine,
+)
 
 # 独自行动可用的动作(对方无需在场/不知情)
 _SOLO_VERBS = {
@@ -507,6 +510,8 @@ def run_social_day(
 
     agg = EventConsequences()      # 当日所有已应用后果的汇总(仅展示用)
     all_notes: list = []           # 旁白跨轮观察汇总
+    # 日终触发多人讨论用:记下各冲突此刻是否已落槌,日终比对出"今天刚了结"的冲突。
+    pre_resolved = group_engine.snapshot_conflict_resolution(repo, game_id)
 
     for r in range(1, CONV_ROUNDS + 1):
         _p(f"第{day}天 · 第{r}/{CONV_ROUNDS}轮社交……(并发度 {max(CONV_CONCURRENCY, 1)})")
@@ -563,6 +568,11 @@ def run_social_day(
 
         # 阶段5)旁白白描本轮(无内容、只神态)→ 写给旁观者
         _run_narrator(repo, llm, game_id, day, acts_lines, all_notes, on_progress)
+
+    # 阶段6)日终:满足条件时自发一场多人讨论(逐句落 timeline,后果折进当日 agg)。
+    group_engine.maybe_trigger_group_discussion(
+        repo, llm, game_id, day, pre_resolved, agg=agg, on_progress=on_progress
+    )
 
     # 汇总成当日公开纪事事件:优先用具体的 event_core(剧情日志),退回 demeanor(神态)
     summary = "；".join(

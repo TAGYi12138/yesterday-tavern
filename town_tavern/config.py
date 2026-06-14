@@ -104,6 +104,25 @@ TALK_MAX_TURNS_BASE = int(os.environ.get("TALK_MAX_TURNS_BASE", "1"))
 TALK_MAX_TURNS_HIGH = int(os.environ.get("TALK_MAX_TURNS_HIGH", "3"))
 # 关系五维里"对抗维度"(怀疑/怨恨/恐惧)达到该阈值即视为高张力对子,给更长对话预算。
 TALK_TENSION_THRESHOLD = int(os.environ.get("TALK_TENSION_THRESHOLD", "40"))
+
+# ---------------------------------------------------------------------------
+# 多人讨论(群聊子流程):在 run_social_day 内的特例分支,复用记忆/timeline/裁决/红线。
+# 第一版:仅三人讨论、每天最多 1 场、仅高价值剧情条件触发(冲突刚结算 / 债务 seizing),
+# 且只在 running 相位发生(awaiting_player 已降级为低强度氛围日,不触发)。
+# 每轮:在场者各出一个 SpeakIntent(LLM)→ 程序仲裁谁开口 → 选中者出一句台词(LLM)。
+# ---------------------------------------------------------------------------
+# 总开关:关闭则 maybe_trigger_group_discussion 永不触发(完全回退到现有两人对话)。
+GROUP_DISCUSSION_ENABLED = os.environ.get("GROUP_DISCUSSION_ENABLED", "1") not in ("0", "false", "False")
+# 一场讨论的参与者人数(第一版固定三人)。
+GROUP_PARTICIPANTS = int(os.environ.get("GROUP_PARTICIPANTS", "3"))
+# 一场讨论最多进行的轮数(每轮最多产生一句台词)。
+GROUP_MAX_ROUNDS = int(os.environ.get("GROUP_MAX_ROUNDS", "6"))
+# 连续多少轮无人愿意开口即自然收场。
+GROUP_MAX_SILENCE_ROUNDS = int(os.environ.get("GROUP_MAX_SILENCE_ROUNDS", "2"))
+# 现场热度达到该上限即收场(避免越吵越停不下来)。
+GROUP_HEAT_END_THRESHOLD = int(os.environ.get("GROUP_HEAT_END_THRESHOLD", "85"))
+# 仲裁时"刚说过的人"再次开口的扣分,避免一个人连说不停。
+GROUP_JUST_SPOKE_PENALTY = int(os.environ.get("GROUP_JUST_SPOKE_PENALTY", "30"))
 # 关系四维 + 怀疑度的取值区间
 RELATION_MIN = 0
 RELATION_MAX = 100
