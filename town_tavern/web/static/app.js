@@ -10,6 +10,9 @@ let lastId = 0;
 let es = null;
 let lastDay = null;
 let pollTimer = null;
+let curGroupId = null;        // 当前正在拼装的群聊块 group_id
+let curGroupEl = null;        // 当前群聊块的 DOM 容器
+const npcNames = {};          // id → 名字(由侧栏轮询填充,用于群聊块头部)
 
 function mode_() { return $("mode").checked ? "debug" : "player"; }
 
@@ -46,9 +49,27 @@ function dayShown(day) {
   s.appendChild(div);
 }
 
+// 同一 group_id 的消息归入同一个群聊块;返回该消息应插入的容器。
+function groupContainer(m) {
+  const s = $("stream");
+  if (!m.group_id) { curGroupId = null; curGroupEl = null; return s; }
+  if (m.group_id !== curGroupId) {
+    curGroupId = m.group_id;
+    curGroupEl = document.createElement("div");
+    curGroupEl.className = "groupblock";
+    const names = (m.participants || []).map((id) => npcNames[id] || id).join("、");
+    const head = document.createElement("div");
+    head.className = "ghead";
+    head.innerHTML = `<span class="gtag">群聊</span><span>${esc(names)}</span>`;
+    curGroupEl.appendChild(head);
+    s.appendChild(curGroupEl);
+  }
+  return curGroupEl;
+}
+
 function renderMsg(m) {
   dayShown(m.day);
-  const s = $("stream");
+  const s = groupContainer(m);
   const wrap = document.createElement("div");
   let cls = m.type || "narration";
   wrap.className = "msg " + cls;
@@ -69,7 +90,8 @@ function renderMsg(m) {
     wrap.appendChild(d);
   }
   s.appendChild(wrap);
-  s.parentElement.scrollTop = s.parentElement.scrollHeight;
+  const scroller = $("stream").parentElement;
+  scroller.scrollTop = scroller.scrollHeight;
 }
 
 function esc(t) {
@@ -93,6 +115,7 @@ function renderNpcs(npcs) {
   const box = $("npcs");
   box.innerHTML = "";
   npcs.forEach((n) => {
+    npcNames[n.id] = n.name;
     const div = document.createElement("div");
     div.className = "npc";
     let tags = "";
@@ -143,6 +166,7 @@ function renderWorld(w) {
 function start() {
   mode = mode_();
   lastId = 0; lastDay = null;
+  curGroupId = null; curGroupEl = null;
   $("stream").innerHTML = "";
   if (es) es.close();
   if (pollTimer) clearInterval(pollTimer);

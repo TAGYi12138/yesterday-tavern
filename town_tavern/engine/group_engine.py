@@ -15,8 +15,8 @@ import uuid
 from typing import Dict, List, Optional
 
 from ..config import (
-    GROUP_HEAT_END_THRESHOLD, GROUP_JUST_SPOKE_PENALTY, GROUP_MAX_ROUNDS,
-    GROUP_MAX_SILENCE_ROUNDS,
+    GROUP_DISCUSSION_ENABLED, GROUP_HEAT_END_THRESHOLD, GROUP_JUST_SPOKE_PENALTY,
+    GROUP_MAX_ROUNDS, GROUP_MAX_SILENCE_ROUNDS, GROUP_PARTICIPANTS,
 )
 from ..llm import prompts
 from ..llm.client import LLMClient
@@ -575,3 +575,74 @@ def apply_discussion_aftermath(
     cons = build_discussion_consequences(state, secret_ids)
     _apply_consequences(repo, game_id, cons, agg)
     return agg
+
+
+# ---------------------------------------------------------------------------
+# 触发(PR-E):何时该自发一场多人讨论
+# ---------------------------------------------------------------------------
+_CONFLICT_LABEL = {
+    "deal_recording": "那盘录音带子的交易",
+    "ledger": "账本那笔糊涂账",
+}
+
+
+def snapshot_conflict_resolution(repo: Repository, game_id: str) -> Dict[str, bool]:
+    """记下当前各冲突"是否已落槌",供日终比对出【今天刚落槌】的冲突。"""
+    return {c.id: c.is_resolved() for c in repo.get_all_conflicts(game_id)}
+
+
+def maybe_trigger_group_discussion(
+    repo: Repository,
+    llm: LLMClient,
+    game_id: str,
+    day: int,
+    pre_resolved: Dict[str, bool],
+    agg: Optional["EventConsequences"] = None,
+    on_progress=None,
+) -> Optional[GroupDiscussionState]:
+    """日终判断是否自发一场多人讨论;满足条件则运行并返回现场终态,否则 None。
+
+    首版触发条件(任一):
+      ① 有冲突【今天刚落槌】(pre_resolved 里它还没了结,现在了结了)——当事人凑一块复盘;
+      ③ 债务濒临接管(debt_stage == "seizing")——阿财/讨债人/家里人当面摊牌。
+    参与者取相关当事人,在场不足再就近补到 GROUP_PARTICIPANTS 人;不足两人则不开。
+    """
+    if not GROUP_DISCUSSION_ENABLED:
+        return None
+    world = repo.get_world_state(game_id)
+    seed: List[str] = []
+    topic = ""
+    topic_owner = ""
+
+    for c in repo.get_all_conflicts(game_id):
+        if c.is_resolved() and not pre_resolved.get(c.id, False):
+            seed = list(c.participants)
+            topic_owner = seed[0] if seed else ""
+            topic = f"刚出了结果的{_CONFLICT_LABEL.get(c.kind, '那桩纠葛')}"
+            break
+
+    if not topic and world.debt_stage == "seizing":
+        seed = ["boss", "gambler", "sister"]
+        topic_owner = "boss"
+        topic = "阿财快被逼着卖店的事"
+
+    if not topic:
+        return None
+
+    present_all = [n.id for n in repo.get_all_npcs(game_id) if n.is_present()]
+    chosen = [p for p in seed if p in present_all]
+    for pid in present_all:           # 当事人不足时,就近拉在场的人凑够人数
+        if len(chosen) >= GROUP_PARTICIPANTS:
+            break
+        if pid not in chosen:
+            chosen.append(pid)
+    chosen = chosen[:GROUP_PARTICIPANTS]
+    if len(chosen) < 2:
+        return None
+
+    if on_progress is not None:
+        on_progress(f"  · 一桩事把人聚到了一处:{topic}")
+    return run_group_discussion(
+        repo, llm, game_id, day, chosen, topic=topic, topic_owner=topic_owner,
+        on_progress=on_progress, agg=agg,
+    )
