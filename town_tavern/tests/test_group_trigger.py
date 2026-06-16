@@ -56,6 +56,39 @@ def test_trigger_on_conflict_just_resolved(game):
     assert "gambler" in state.participants and "reporter" in state.participants
 
 
+def test_cooldown_blocks_back_to_back_triggers(game):
+    """债务长期 seizing 时不该天天刷:冷却期内第二次返回 None,过了冷却又能触发。"""
+    repo, gid = game
+    repo.set_world_value(gid, "debt_stage", "seizing")
+    llm = FakeLLM(_wants_all())
+    pre = group_engine.snapshot_conflict_resolution(repo, gid)
+    first = group_engine.maybe_trigger_group_discussion(repo, llm, gid, 10, pre)
+    assert first is not None
+    # 紧接着的几天(< 冷却天数)都不再触发。
+    blocked = group_engine.maybe_trigger_group_discussion(repo, llm, gid, 11, pre)
+    assert blocked is None
+    # 过了冷却天数后又能开一场。
+    later = group_engine.maybe_trigger_group_discussion(
+        repo, llm, gid, 10 + group_engine.GROUP_DISCUSSION_COOLDOWN_DAYS, pre
+    )
+    assert later is not None
+
+
+def test_awaiting_player_day_can_spawn_discussion(game):
+    """根因修复:awaiting_player 定格日(债务 seizing)也能自发一场三人对峙。"""
+    from town_tavern.engine import world_engine
+    repo, gid = game
+    repo.set_world_value(gid, "world_phase", "awaiting_player")
+    repo.set_world_value(gid, "boss_debt", 700000)   # → debt_stage 结算为 seizing
+    event = world_engine.advance_day(repo, FakeLLM(_wants_all()), gid)
+    assert event is not None
+    dialogues = [
+        m for m in repo.get_timeline_messages(gid, mode="debug")
+        if m["type"] == "dialogue" and m["group_id"]
+    ]
+    assert dialogues, "awaiting_player 定格日应能产出一场带 group_id 的多人对峙"
+
+
 def test_disabled_flag_blocks_trigger(game, monkeypatch):
     repo, gid = game
     repo.set_world_value(gid, "debt_stage", "seizing")

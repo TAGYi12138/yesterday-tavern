@@ -36,7 +36,7 @@ from ..models.world import (
 from ..storage.repository import Repository
 from . import (
     conflict_engine, conversation_engine, crisis_engine, event_engine,
-    memory_engine, npc_engine, relationship_engine,
+    group_engine, memory_engine, npc_engine, relationship_engine,
 )
 
 
@@ -90,7 +90,7 @@ _AWAITING_BEATS = [
 
 
 def _run_awaiting_player_day(
-    repo: Repository, game_id: str, new_day: int,
+    repo: Repository, llm: LLMClient, game_id: str, new_day: int,
     _p: Callable[[str], None],
 ) -> Event:
     """瑕疵①(方案B):awaiting_player 状态下的"低强度氛围日"。
@@ -98,6 +98,7 @@ def _run_awaiting_player_day(
     刻意【不】跑社交生成 / 反思 / 记忆压缩,只:
       - 落一条确定性的氛围拍子(公开事件 + 观察器时间线),让世界"还在微动";
       - 让已有冲突继续落槌、危机余波自然散去、债务终局倒计时推进(均不再升级/堆压);
+      - 满足条件时自发一场多人对峙(债务濒临接管/冲突刚落槌),带冷却防止天天刷;
       - 自然衰减(_daily_world_tick),但不写任何新记忆。
     这样世界"定格在爆点等玩家",而非无限堆事件与记忆。
     """
@@ -115,6 +116,8 @@ def _run_awaiting_player_day(
     )
 
     # 已有冲突继续落槌(不新建);危机余波自然收尾;债务终局倒计时;压力心理状态维护。
+    # 先记下各冲突此刻是否已落槌,供下面比对出"今天刚落槌"的冲突以触发对峙。
+    pre_resolved = group_engine.snapshot_conflict_resolution(repo, game_id)
     for line in conflict_engine.tick_conflicts(repo, game_id, new_day, allow_new=False):
         _p("  " + line)
     for line in crisis_engine.tick_crisis(repo, game_id, new_day):
@@ -128,6 +131,12 @@ def _run_awaiting_player_day(
         )
     for line in npc_engine.update_mental_states(repo, game_id):
         _p("  " + line)
+
+    # 定格日里也允许偶发一场多人对峙(债务濒临接管/冲突刚落槌),后果折进当日 event。
+    group_engine.maybe_trigger_group_discussion(
+        repo, llm, game_id, new_day, pre_resolved,
+        agg=event.consequences, on_progress=_p,
+    )
 
     # 仅自然衰减(债务利息已封顶、紧张度自然回落),不写任何新记忆。
     _daily_world_tick(repo, game_id)
@@ -169,7 +178,7 @@ def advance_day(
     # 缺席),则【不再】跑完整社交日 + 反思 + 记忆压缩——只走一条低强度氛围拍子(盯梢/等待),
     # 让世界"定格在爆点"而非继续堆事件/记忆。等玩家介入打点后,下一天自然恢复正常推进。
     if repo.get_world_state(game_id).is_awaiting_player():
-        return _run_awaiting_player_day(repo, game_id, new_day, _p)
+        return _run_awaiting_player_day(repo, llm, game_id, new_day, _p)
 
     # Step 1~5: 生成当日事件(三选一模式),并落地后果与记忆。
     if CONVERSATION_MODE:

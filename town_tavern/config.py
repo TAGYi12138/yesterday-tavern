@@ -107,8 +107,8 @@ TALK_TENSION_THRESHOLD = int(os.environ.get("TALK_TENSION_THRESHOLD", "40"))
 
 # ---------------------------------------------------------------------------
 # 多人讨论(群聊子流程):在 run_social_day 内的特例分支,复用记忆/timeline/裁决/红线。
-# 第一版:仅三人讨论、每天最多 1 场、仅高价值剧情条件触发(冲突刚结算 / 债务 seizing),
-# 且只在 running 相位发生(awaiting_player 已降级为低强度氛围日,不触发)。
+# 第一版:仅三人讨论、每天最多 1 场、仅高价值剧情条件触发(冲突刚结算 / 债务 seizing)。
+# running 相位与 awaiting_player 定格日均可触发(后者正是债务摊牌的高潮戏);带冷却防刷。
 # 每轮:在场者各出一个 SpeakIntent(LLM)→ 程序仲裁谁开口 → 选中者出一句台词(LLM)。
 # ---------------------------------------------------------------------------
 # 总开关:关闭则 maybe_trigger_group_discussion 永不触发(完全回退到现有两人对话)。
@@ -123,6 +123,8 @@ GROUP_MAX_SILENCE_ROUNDS = int(os.environ.get("GROUP_MAX_SILENCE_ROUNDS", "2"))
 GROUP_HEAT_END_THRESHOLD = int(os.environ.get("GROUP_HEAT_END_THRESHOLD", "85"))
 # 仲裁时"刚说过的人"再次开口的扣分,避免一个人连说不停。
 GROUP_JUST_SPOKE_PENALTY = int(os.environ.get("GROUP_JUST_SPOKE_PENALTY", "30"))
+# 两场自发讨论之间的最小间隔天数,避免债务长期 seizing 时天天刷对峙。
+GROUP_DISCUSSION_COOLDOWN_DAYS = int(os.environ.get("GROUP_DISCUSSION_COOLDOWN_DAYS", "3"))
 # 关系四维 + 怀疑度的取值区间
 RELATION_MIN = 0
 RELATION_MAX = 100
