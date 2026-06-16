@@ -15,8 +15,9 @@ import uuid
 from typing import Dict, List, Optional
 
 from ..config import (
-    GROUP_DISCUSSION_ENABLED, GROUP_HEAT_END_THRESHOLD, GROUP_JUST_SPOKE_PENALTY,
-    GROUP_MAX_ROUNDS, GROUP_MAX_SILENCE_ROUNDS, GROUP_PARTICIPANTS,
+    GROUP_DISCUSSION_COOLDOWN_DAYS, GROUP_DISCUSSION_ENABLED,
+    GROUP_HEAT_END_THRESHOLD, GROUP_JUST_SPOKE_PENALTY, GROUP_MAX_ROUNDS,
+    GROUP_MAX_SILENCE_ROUNDS, GROUP_PARTICIPANTS,
 )
 from ..llm import prompts
 from ..llm.client import LLMClient
@@ -584,6 +585,8 @@ _CONFLICT_LABEL = {
     "deal_recording": "那盘录音带子的交易",
     "ledger": "账本那笔糊涂账",
 }
+# 记最近一次自发讨论发生的天数(存 world_state,用于冷却)。
+_LAST_GROUP_DAY_KEY = "last_group_discussion_day"
 
 
 def snapshot_conflict_resolution(repo: Repository, game_id: str) -> Dict[str, bool]:
@@ -606,8 +609,12 @@ def maybe_trigger_group_discussion(
       ① 有冲突【今天刚落槌】(pre_resolved 里它还没了结,现在了结了)——当事人凑一块复盘;
       ③ 债务濒临接管(debt_stage == "seizing")——阿财/讨债人/家里人当面摊牌。
     参与者取相关当事人,在场不足再就近补到 GROUP_PARTICIPANTS 人;不足两人则不开。
+    带冷却:两场自发讨论至少间隔 GROUP_DISCUSSION_COOLDOWN_DAYS 天,避免债务长期 seizing 天天刷。
     """
     if not GROUP_DISCUSSION_ENABLED:
+        return None
+    last_day = int(repo.get_world_value(game_id, _LAST_GROUP_DAY_KEY) or -10 ** 9)
+    if day - last_day < GROUP_DISCUSSION_COOLDOWN_DAYS:
         return None
     world = repo.get_world_state(game_id)
     seed: List[str] = []
@@ -642,7 +649,10 @@ def maybe_trigger_group_discussion(
 
     if on_progress is not None:
         on_progress(f"  · 一桩事把人聚到了一处:{topic}")
-    return run_group_discussion(
+    state = run_group_discussion(
         repo, llm, game_id, day, chosen, topic=topic, topic_owner=topic_owner,
         on_progress=on_progress, agg=agg,
     )
+    if state is not None:
+        repo.set_world_value(game_id, _LAST_GROUP_DAY_KEY, day)   # 起冷却
+    return state
